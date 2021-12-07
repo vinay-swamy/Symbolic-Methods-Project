@@ -1,0 +1,178 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+### Mimic III background
+- paper https://www.nature.com/articles/sdata201635
+- only patients from the ICU
+- only contains adults (age > 16) and and neonates(age<???)
+- sounds like they kept everyone that mwt some wort of data quality threshsold?
+
+## Notes 
+
+-  link for IC9 <==> SNOMED-CT mapping https://www.nlm.nih.gov/research/umls/mapping_projects/icd9cm_to_snomedct.html
+
+
+## TODO
+
+- Seems like parent level ICD9 codes are never used, unless the parent terms has no direct children 
+- Mimic is restricted to just ICU patients > 16, and a sprinkling of neonates. I should remove the terms that are likely not relevant to the ICU
+  - one possibility is mapping ICD-9 codes to SNOMED-CT, and seeing if we can infer some sort of pediatric event from there?
+
+
+Restructured data into sqlite db 
+
+```{r}
+library(tidyverse)
+library(DBI)
+
+con = dbConnect(RSQLite::SQLite(), 'data/mimic3-1.4/mimic3.db')
+con %>% tbl('ADMISSIONS') %>% collect
+tables = read_csv('data/mimic3-1.4/tbl_headers.csv') %>% .[[1]]
+```
+
+### ICD9 Diagnoses 
+ICD9 Diagnoses are in `DIAGNOSES_ICD`; references are in `D_ICD_DIAGNOSES`
+```{r}
+diag_icd =  con %>% tbl('DIAGNOSES_ICD') %>% select(-ROW_ID) %>%  collect 
+icd_reference = con %>% tbl('D_ICD_DIAGNOSES')%>% select(-ROW_ID) %>% collect()
+n_distinct(icd_reference$ICD9_CODE) 
+```
+
+Not all ICD9 codes are present here. We can pull more from the mappers we will use later 
+
+
+```{r}
+
+
+i2s_1t1 <- read_tsv('~/Downloads/ICD9CM_DIAGNOSIS_MAP_202012/ICD9CM_SNOMED_MAP_1TO1_202012.txt', col_types = 'ccccccccccc') %>% mutate(type = '1-to-1')
+i2s_1tm <- read_tsv('~/Downloads/ICD9CM_DIAGNOSIS_MAP_202012/ICD9CM_SNOMED_MAP_1TOM_202012.txt', col_types = 'ccccccccccc') %>% mutate(type = '1-to-Many')
+icd_to_SNOMED_mapping <- bind_rows(i2s_1tm, i2s_1t1) %>% 
+  mutate(ICD9_CODE = str_replace_all(ICD_CODE, '\\.', ''),
+         SNOMED_CID = as.character(SNOMED_CID))
+icd_reference <- bind_rows(
+  icd_reference,
+  icd_to_SNOMED_mapping %>% filter(!ICD9_CODE %in% icd_reference$ICD9_CODE) %>% select(ICD9_CODE, SHORT_TITLE=ICD_NAME) %>% distinct
+)
+```
+
+
+For some now, I'm going to ignore the E and V supplemental codes 
+
+```{r}
+library(lubridate)
+admissions = con %>% 
+  tbl('ADMISSIONS') %>% 
+  select(all_of(colnames(.)[1:5])) %>% collect() %>% select(-ROW_ID)
+
+admissions %>% group_by(SUBJECT_ID, HADM_ID) %>% count ## each row is a distinct individual,admit combo
+diag_with_admits <-  admissions %>% left_join(diag_icd) %>% mutate(ADMITTIME = as_datetime(ADMITTIME), 
+                                                                   DISCHTIME = as_datetime(DISCHTIME)
+                                                                   )
+```
+
+Data is mostly complete; only 47 patients have no ICD code 
+
+We'll define a count as each distinct entry of a code; in the future, we might consider distinct per patient 
+
+```{r}
+
+icd_code_counts <- diag_with_admits %>% group_by( ICD9_CODE) %>% count  %>% rename(count =n)
+```
+
+majority of terms have less than 7 counts 
+
+```{r}
+
+icd_reference_annotated =icd_reference %>% 
+  mutate(icd_numeric = as.numeric(ICD9_CODE), 
+         icd_numeric = replace(icd_numeric, grepl("E", ICD9_CODE), -1),
+         icd_numeric = replace(icd_numeric, grepl("V", ICD9_CODE), -2),
+         is_used = ifelse(ICD9_CODE %in% diag_icd$ICD9_CODE,'Used', 'Unused'),
+         code_str = as.character(ICD9_CODE), 
+         code_len = nchar(code_str),
+         is_parent = ifelse(code_len > 3, 'child', 'parent'),
+         parent_code = substr(code_str, 1, 3),
+         parent_code_num = as.numeric(parent_code),
+         parent_code_num = replace(parent_code_num, is.na(parent_code_num), icd_numeric[is.na(parent_code_num)]),
+         parent_code_class =  case_when(
+                    parent_code_num == -1 ~ "External Injury",
+                    parent_code_num == -2 ~ "Supplemental classification of patient background",
+                    parent_code_num>=1 & parent_code_num<=139 ~ 'Infectious and Parasitic disease',
+                    parent_code_num>=140 & parent_code_num<=239 ~ 'Neoplasms', 
+                    parent_code_num>=240 & parent_code_num<=279 ~ 'Endocrine, Metabolic, Immunity Disorders',
+                    parent_code_num>=280 & parent_code_num<=319 ~ 'Blood diseases',
+                    parent_code_num>=320 & parent_code_num<=389 ~ 'brain disease',
+                    parent_code_num>=390 & parent_code_num<=459 ~ 'Circulatory disease',
+                    parent_code_num>=460 & parent_code_num<=519 ~ 'Respiratory disease',
+                    parent_code_num>=520 & parent_code_num<=579 ~ 'Digestive disease',
+                    parent_code_num>=580 & parent_code_num<=629 ~ 'Genitourinary System',
+                    parent_code_num>=630 & parent_code_num<=679 ~ 'Pregnancy,Childbirth,Puerperium Complications',
+                    parent_code_num>=680 & parent_code_num<=709 ~ 'Skindisease',
+                    parent_code_num>=710 & parent_code_num<=739 ~ 'Musculoskeletal disease ',
+                    parent_code_num>=740 & parent_code_num<=759 ~ 'Congenital Anomalies',
+                    parent_code_num>=760 & parent_code_num<=779 ~ 'Perinatal Period conditions',
+                    parent_code_num>=780 & parent_code_num<=799 ~ 'Symptoms, Signs and Ill-defined Conditions',
+                    parent_code_num>=800 & parent_code_num<=999 ~ 'Injury and Poisoning'
+          )
+  )         
+icd_reference_annotated %>% select(parent_code, parent_code_class) %>% distinct %>% 
+  group_by(parent_code_class) %>% 
+  summarise(start = min(parent_code), 
+            end = max(parent_code)) %>% 
+  arrange(start) %>% 
+  mutate(`Code Interval` = paste(start, end, sep ='-')) %>% 
+  select(`Code Interval`, Description = parent_code_class ) %>% 
+  write_csv('ICD9_class_ref.csv')
+
+icd9_parent_size = icd_reference_annotated %>% group_by(parent_code) %>% summarise(parent_code_size = n())
+
+
+icd_code_counts_annotated <- icd_reference_annotated %>% left_join(icd_code_counts) %>% mutate(count = replace_na(count, 0)) %>% left_join(icd9_parent_size)
+
+save(icd_code_counts_annotated, file = 'Rdata/icd_code_reference_and_counts.Rdata')
+
+```
+
+
+
+## SNOMED to ICD9
+
+
+
+```{r}
+
+icd_reference_with_snomed <- icd_reference %>% left_join(icd_to_SNOMED_mapping)
+save(diag_with_admits, file = "Rdata/ICD9_diag_codes_by_patient_visit.Rdata")
+save(icd_reference_with_snomed, file = "Rdata/ICD9_ref_mapped_to_snomed.Rdata")
+save(icd_code_counts_annotated, file = "Rdata/ICD9_mimic3_counts.Rdata")
+
+```
+
+
+bash 
+```
+grep 116680003 SnomedCT_USEditionRF2_PRODUCTION_20210901T120000Z/Full/Terminology/sct2_Relationship_Full_US1000124_20210901.txt > snomed_is-a_relationships.txt
+
+ wc -l snomed_is-a_relationships.txt
+```
+
+```{r}
+system(" python3 networkx_SNOMED_depth.py")
+```
+
+```{r}
+snomed_depth <- read_csv('SNOMED_term_depth_from_networkx.csv', col_types = 'cd') %>% 
+  rename(SNOMED_CID = SID)
+
+ICD9_depth <- filter(icd_reference_with_snomed, !is.na(SNOMED_CID)) %>% 
+  inner_join(snomed_depth) %>% 
+  group_by(ICD9_CODE) %>% 
+  summarise(avg_depth = mean(depth))
+save(ICD9_depth, file = "Rdata/ICD9_depth.Rdata")
+```
+
+
+
+

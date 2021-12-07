@@ -1,0 +1,212 @@
+---
+title: "A survey of ICD9 term usage in the MIMIC-III EHR Data set"
+output: html_notebook
+---
+
+Overall research question: What are the characteristics of ICD9 code usage, and are some conceptual reasons that help explain that usage?
+  - What are some characteristics to explore
+    - the count of each term - break terms down into low, medium and high term
+    - term usage by different groups of terms within the hierarchy
+    - term usage by different patient populations
+  - Conceptual reasons
+    - term granualarity 
+    - financial biases 
+
+
+## ICD9 Term counts 
+
+```{r}
+library(tidyverse)
+load('Rdata/icd_code_reference_and_counts.Rdata')
+```
+
+
+There are 12167 total ICD9 terms. The number of them that are used in mimic:
+
+```{r}
+sum(icd_code_counts_annotated$count != 0)
+```
+
+So a little over half the ICD9 terms are not used.
+
+This is what the distribution of counts looks like for the unused terms 
+
+```{r}
+icd_code_counts_annotated %>% filter(count!=0) %>% 
+  mutate(k='ICD9') %>% 
+ggplot(aes(x=k, y=count))+
+  geom_violin()+
+  geom_boxplot(width=.05)+
+  xlab('')+
+  ylim(c(0, 100))+
+  theme_classic() +
+  theme(text = element_text(size = 15))
+
+
+```
+
+Some terms are not likely not used because the disease that it describe is not likley to be seen in the hospital. Ideally, I would like to remove these form further analysis, but identifying them is a difficult task. 
+
+The stategy I will adopt is to filter based on usage of parent codes:
+Each ICD9 consists of a 3 digit parent code, and 2 digit subcode; Each parent code is supposed to represent a broad class of disease. I'm going going to keep a term if its associated parent code has at least one used term across all its children. 
+
+```{r}
+icd_code_counts_annotated %>% group_by(parent_code) %>% 
+  summarise(parent_never_used = sum(count) == 0) %>% filter(parent_never_used) %>% nrow
+icd_code_counts_annotated %>% group_by(parent_code) %>% 
+  summarise(parent_never_used = sum(count) == 0) %>% filter(parent_never_used) %>% 
+  inner_join(icd_code_counts_annotated) %>% nrow
+
+codes_to_remove <- icd_code_counts_annotated %>% group_by(parent_code) %>% 
+  summarise(parent_never_used = sum(count) == 0) %>% filter(parent_never_used) %>% pull(parent_code)
+```
+So 83 parent codes out of the 928 total have no usage across all their children.
+
+These 83 parent codes contain 633 total ICD code that will be excluded
+
+### depth of term in the snomed hierarchy
+
+We can map terms to snomed hierarchy, and then calculate the distance of each term to the root node. We can use this as a proxy for granularity.
+
+
+## ICD 2 SNOMED
+
+```{r}
+load('Rdata/ICD9_ref_mapped_to_snomed.Rdata')
+snomed_term_depth = read_csv('SNOMED_term_depth_from_networkx.csv', col_types = 'cd', col_names = c("SNOMED_CID", "depth"), skip=1)
+ICD9_code_depth <- inner_join(icd_reference_with_snomed, snomed_term_depth) %>% group_by(ICD9_CODE) %>% summarise(avg_depth = mean(depth))
+
+```
+
+
+
+
+```{r}
+icd_counts_annotated_with_depth <- icd_code_counts_annotated %>% 
+  filter(!parent_code %in% codes_to_remove) %>% 
+  mutate(is_unused = ifelse(count == 0, 'Unused', 'Used')) %>% 
+  inner_join(ICD9_code_depth)
+
+sum(is.na(icd_counts_annotated_with_depth$avg_depth))
+```
+
+so roughly  1700 terms do have a mapping to snomed
+
+```{r}
+icd_counts_annotated_with_depth <- icd_counts_annotated_with_depth %>% 
+  filter(!is.na(avg_depth))
+ggplot(icd_counts_annotated_with_depth) +
+  geom_boxplot(aes(x=is_unused, y=avg_depth))
+```
+
+So at first glance, it seems like there's no difference between the granularity of used and un-used terms 
+
+
+
+
+However, if we split terms up by their broader disease category, we can see that different classes of terms lead to different depths.
+
+```{r fig.height=7}
+ggplot(icd_counts_annotated_with_depth) +
+  geom_boxplot(aes(x=parent_code_class, y=avg_depth)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+```
+
+This leads me to hypothesize that there's relative scaling factor specific to disease
+
+So instead, I'm going to compare depth only within a parent code
+
+```{r}
+depth_by_pcode_and_usage <- icd_counts_annotated_with_depth %>% group_by(parent_code, is_used) %>% 
+  summarise(med_depth = median(avg_depth)) %>% 
+  pivot_wider(names_from = is_used, values_from = med_depth) %>% 
+  filter( !(is.na(Unused)|is.na(Used)) ) %>% 
+  mutate(delta = Unused - Used) 
+
+summary(depth_by_pcode_and_usage$delta)
+
+class2parent <- icd_code_counts_annotated %>% select(parent_code, parent_code_class) %>% distinct
+
+depth_by_pcode_and_usage %>% 
+  mutate(k='df', 
+         delta = Unused-Used) %>% 
+  inner_join(class2parent) %>% 
+ggplot() + 
+    geom_violin(aes(x=k, y=delta), width = .5)+
+    geom_boxplot(aes(x=k, y=delta), width = .05) +
+    geom_point(data = tibble(k="df", y= mean(depth_by_pcode_and_usage$delta)),aes(x=k, y=y), color = "red")+
+geom_hline(yintercept = 0)
+
+
+
+
+```
+
+
+This still isnt super meaningful, so lets try one more thing. Perhaps there might be a granularity difference between terms that *are* used 
+
+Now lets try and better differentiate between used - split it into bins 
+
+bins
+```{r}
+sum(icd_code_counts_annotated$count == 1)
+sum(icd_code_counts_annotated$count >=2 & icd_code_counts_annotated$count <=5)
+ 
+sum(icd_code_counts_annotated$count >5 &icd_code_counts_annotated$count <= 25)
+
+sum(icd_code_counts_annotated$count > 25)
+```
+
+```{r}
+
+tdiff <- function(x){
+  if(length(x) >1){
+   combn(x, 2) %>% t %>% {paste(.[,1] , .[,2], sep = " - " )}
+  }else{
+    0
+  }
+  
+}
+
+tcompn <- function(x){
+  if(length(x) >1){
+   combn(x, 2) %>% t %>% {paste(.[,1] , .[,2], sep = " - " )}
+  }else{
+    paste(x, sep = " - ")
+  }
+}
+
+depth_by_bin <-  icd_counts_annotated_with_depth %>% 
+  filter(!is.na(avg_depth)) %>% 
+  mutate(count_bin = case_when(
+    count ==  0 ~ "0",
+    count == 1 ~ "1", 
+    count >=2 & count <5 ~ "[2,5)",
+    count >=5 & count <25 ~ "[5, 25)",
+    count >= 25 ~ ">=25"
+  ) ) 
+ggplot(depth_by_bin)+
+  geom_boxplot(aes(x = count_bin, y= avg_depth)) + 
+  theme_minimal()
+
+ggplot(icd_counts_annotated_with_depth %>% filter(), aes(x= count, y = avg_depth)) + 
+  geom_point() + 
+  geom_smooth(method = 'lm') + 
+  xlim(c(1,100))
+depth_by_bin %>% 
+  group_by(parent_code, count_bin) %>% 
+  summarise(med_depth = median(avg_depth)) %>% 
+  group_by(parent_code) %>% 
+  summarise(dm = c(dist(med_depth, method = "manhattan")), 
+            comp = tcompn(count_bin))
+  # pivot_wider(names_from = is_used, values_from = med_depth) %>% 
+  # filter( !(is.na(Unused)|is.na(Used)) ) %>% 
+  # mutate(delta = Unused - Used) 
+
+
+sum(is.na(icd_counts_annotated_with_depth$avg_depth))
+
+c(dist(c('a' = 0, 'b' = 2, 'c' = 3 ,'d' = -2 )))
+
+```
+

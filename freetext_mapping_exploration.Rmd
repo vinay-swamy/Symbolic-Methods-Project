@@ -1,0 +1,676 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+Freetext note mapping results 
+
+```{r}
+library(tidyverse)
+raw_mapping_results <-bind_rows(
+  read_delim('mimicR/freetext_mapping_to_CUI_only_p1.txt', delim = "|", col_names = F) %>% select(X1,X2, X5, X6),
+  read_delim('mimicR/freetext_mapping_to_CUI_only_rerun_on_chunk.txt', delim = "|", col_names = F) %>% select(X1,X2, X5, X6)
+)
+
+colnames(raw_mapping_results) <- c("SUBJECT_ID", "HADM_ID", "freetext_noteline", "CUI_strl")
+
+raw_mapping_has_ft_no_cui <- raw_mapping_results %>%  filter(!is.na(freetext_noteline), is.na(CUI_strl)) %>% 
+  mutate(freetext_noteline  = paste0(freetext_noteline, " ." ), 
+         UID = paste0(SUBJECT_ID, '-', HADM_ID)) %>% 
+  select(UID, freetext_noteline)
+
+write_delim(raw_mapping_has_ft_no_cui, 'mimicR/unmapped_noteterms_batch_mm_fmt.rrf', col_names = F, delim = "|")
+
+raw_mapping_has_result <- raw_mapping_results %>%  filter(!is.na(freetext_noteline), !is.na(CUI_strl)) 
+
+```
+
+
+Get CUI to SNOMED and CUI to ICD9 mapping
+
+```{bash}
+echo "SNOMEDCT_US" > q.txt
+echo "ICD9CM" >> q.txt
+echo "ICD10CM" >> q.txt
+grep -Ff q.txt ~/Downloads/MRCONSO.RRF > CUI_to_snomed_ICD9.txt
+```
+
+
+```{r}
+load('Rdata/icd_code_reference_and_counts.Rdata')
+CUI_mapper <- read_delim("CUI_to_snomed_ICD9.txt", delim = "|", col_names = F)
+
+CUI_to_snomed <- CUI_mapper %>% filter(X12 == "SNOMEDCT_US") %>%  select(X1, X14)
+CUI_to_ICD9 <- CUI_mapper %>% filter(X12 == "ICD9CM") %>%  select(X1, X14) %>% 
+  mutate(X14 = str_remove_all(X14, "\\.") %>% str_split("-") %>% sapply(function(x) first(x))) %>% 
+  filter(X14 %in% icd_code_counts_annotated$ICD9_CODE)
+CUI_to_ICD10 <- CUI_mapper %>% filter(X12 == "ICD10CM") %>%  select(X1, X14) %>% mutate(X14 = str_remove_all(X14, "\\."))
+colnames(CUI_to_snomed) <-  c("CUI", "SID")
+colnames(CUI_to_ICD9) <-c("CUI", "ICD9_CODE")
+colnames(CUI_to_ICD10) <- c("CUI", "ICD10_CODE")
+
+```
+
+
+mapping directly to ICD9
+
+```{r}
+raw_ft_map_long <-  raw_mapping_has_result %>% 
+  mutate(CUI = str_split(CUI_strl, ",")) %>% 
+  unnest(CUI) %>% 
+  select(-CUI_strl)
+
+
+raw_ft_map_long_matches_ICD9 <-  inner_join(raw_ft_map_long, CUI_to_ICD9) %>% 
+  mutate(mapping_method = "CUI-ICD9") %>% distinct 
+raw_ft_map_long_matches_minusICD9 <- anti_join(raw_ft_map_long,   raw_ft_map_long_matches_ICD9)
+
+```
+
+Mapping to SNOMED then ICD9
+
+
+```{r}
+load('Rdata/ICD9_ref_mapped_to_snomed.Rdata')
+SNOMED_to_ICD9 <- icd_reference_with_snomed %>% select(SID = SNOMED_CID, ICD9_CODE)
+n_SNOMED_to_ICD9 <- SNOMED_to_ICD9 %>% group_by(ICD9_CODE) %>% summarise(n_SID = n())
+
+raw_ft_map_long_SNOMED_ICD9 <-  raw_ft_map_long_matches_minusICD9 %>% 
+   inner_join(CUI_to_snomed) %>% 
+   inner_join(SNOMED_to_ICD9) %>%
+   distinct 
+
+raw_ft_map_long_SNOMED_ICD9 <- raw_ft_map_long_SNOMED_ICD9 %>% group_by(SUBJECT_ID, HADM_ID, freetext_noteline, ICD9_CODE) %>% 
+  summarise(n_SID_matched = n_distinct(SID)) %>% inner_join(n_SNOMED_to_ICD9) %>% 
+  mutate(frac_SID_mapped  = n_SID_matched/n_SID) %>% 
+  filter(frac_SID_mapped >= 2/3) %>% 
+  select(-n_SID, -n_SID_matched, -frac_SID_mapped) %>%
+  ungroup %>% 
+  inner_join(raw_ft_map_long_SNOMED_ICD9) %>% 
+  mutate(mapping_method = "CUI-SNOMED-ICD9")
+
+
+raw_ft_map_long_matches_minusICD9_minusSNOMED <-  raw_ft_map_long_matches_minusICD9 %>% anti_join(raw_ft_map_long_SNOMED_ICD9)
+
+```
+
+Mapping to ICD10 then ICD9
+
+```{r}
+ICD9210 <- read_csv("https://data.nber.org/gem/icd10cmtoicd9gem.csv") %>% 
+  select(ICD9_CODE = icd9cm, ICD10_CODE = icd10cm)
+
+raw_ft_map_long_matches_ICD10_ICD9 <-  raw_ft_map_long_matches_minusICD9_minusSNOMED %>% 
+  inner_join(CUI_to_ICD10) %>% 
+  distinct %>% 
+  inner_join(ICD9210) %>% 
+  distinct %>% 
+  mutate(mapping_method = "CUI-ICD10-ICD9")
+
+```
+
+
+
+```{r}
+ft_notes_mapped_to_ICD9_clean <- bind_rows(
+  raw_ft_map_long_matches_ICD9, 
+  raw_ft_map_long_SNOMED_ICD9 %>% select( all_of(colnames(raw_ft_map_long_matches_ICD9))),
+  raw_ft_map_long_matches_ICD10_ICD9 %>% select(all_of(colnames(raw_ft_map_long_matches_ICD9)))
+) %>% 
+  mutate(SUBJECT_ID = as.character(SUBJECT_ID), 
+         HADM_ID = as.character(HADM_ID))
+
+
+```
+
+
+
+```{r}
+load('Rdata/ICD9_diag_codes_by_patient_visit.Rdata')
+
+unused_codes <- icd_code_counts_annotated %>% filter(is_used == "Unused") %>% pull(ICD9_CODE)
+
+nec_noc_other_terms <- icd_code_counts_annotated %>% 
+  filter(grepl('NOS|NEC|unspec|oth ', SHORT_TITLE, ignore.case = T)|
+         grepl("not otherwise specified|not elsewhere classified", LONG_TITLE)
+         ) %>% pull(ICD9_CODE) 
+
+ft_notes_mapped_to_ICD9_clean %>% 
+  anti_join(diag_with_admits %>% select(SUBJECT_ID, HADM_ID, ICD9_CODE)) #%>% 
+  
+ft_notes_mapped_novel_code <- ft_notes_mapped_to_ICD9_clean %>% 
+  anti_join(diag_with_admits %>% select(SUBJECT_ID, HADM_ID, ICD9_CODE)) %>% 
+  filter(!ICD9_CODE %in% nec_noc_other_terms) %>% 
+  mutate(ft_map_id = paste0("FT", 1:nrow(.))) 
+
+
+ft_notes_mapped_novel_code %>% select(SUBJECT_ID, HADM_ID) %>% distinct %>% nrow
+
+
+```
+
+```{r}
+diag_ICD9_with_ft_ICD9 <-  diag_with_admits  %>% 
+  select(-contains("TIME")) %>% 
+  mutate(CODE_ORIGIN = "MIMIC-diag") %>% 
+  bind_rows( ft_notes_mapped_novel_code %>% select(-freetext_noteline, -mapping_method, -CUI) %>% mutate(SEQ_NUM = "-1", CODE_ORIGIN = "freetext_note"))
+
+```
+
+
+Code cost analysis 
+
+```{r}
+load('Rdata/ICD9_estimated_dollar_amounts.Rdata')
+save.image("workspace_prefinancial_analysis.Rdata")
+```
+
+
+Via Medicare data 
+
+```{r}
+diag_ICD9_with_ft_ICD9_with_cost <- diag_ICD9_with_ft_ICD9 %>% inner_join(estim_dollar_per_ICD9_medicare)
+
+wilcox.test(diag_ICD9_with_ft_ICD9_with_cost %>% filter(CODE_ORIGIN == "freetext_note") %>% pull(avg_estim_dollar_sub), 
+            diag_ICD9_with_ft_ICD9_with_cost %>% filter(CODE_ORIGIN != "freetext_note") %>% pull(avg_estim_dollar_sub)
+            )[['p.value']]
+
+
+ggplot(diag_ICD9_with_ft_ICD9_with_cost) + 
+  geom_boxplot(aes(x=CODE_ORIGIN, y =avg_estim_dollar_sub), outlier.shape = NA) +
+  ylim(c(0, 20000))
+
+
+
+```
+```{r}
+ft_code_counts <- ft_notes_mapped_novel_code %>% group_by(ICD9_CODE) %>% summarise(count_ft = n()) %>% mutate(prop_ft = count_ft/sum(count_ft))
+
+icd_counts_annotated %>%
+  rename(count_mm = count) %>% 
+  mutate(prop_mm = count_mm/sum(count_mm)) %>% 
+  select(ICD9_CODE, count_mm, prop_mm) %>% 
+  inner_join(ft_code_counts)
+ft_code_counts %>% filter(!ICD9_CODE %in% icd_counts_annotated$ICD9_CODE)
+```
+
+```{r}
+avg_diff_cost <-  diag_ICD9_with_ft_ICD9_with_cost %>% group_by(SUBJECT_ID, HADM_ID, CODE_ORIGIN) %>% 
+  summarise(avg_sub = mean(avg_estim_dollar_sub)) %>% 
+  pivot_wider(id_cols = c(SUBJECT_ID, HADM_ID), names_from = CODE_ORIGIN, values_from = avg_sub) %>% 
+  mutate(delta = freetext_note -  `MIMIC-diag`,  
+         x='freetext - MIMIC')
+
+  
+ggplot(avg_diff_cost, aes(x=x, y=delta)) +
+  geom_violin( width  = .5)+
+  geom_boxplot(width = .1)
+```
+```{r}
+ft_notes_mapped_novel_code %>% filter(ICD9_CODE == "41401") 
+```
+
+997.91 = surgical complication - hyper-tension
+74710 = Coarctation of the Aorta
+
+```{r}
+
+check_total_diff <- function(t_code ){
+
+code_ft_cost <- ft_notes_mapped_novel_code %>% 
+  filter(ICD9_CODE == t_code) %>% 
+  select(SUBJECT_ID, HADM_ID) %>% 
+  distinct() %>% 
+  inner_join(diag_with_admits) %>% 
+  inner_join(estim_dollar_per_ICD9_medicare) %>% 
+  group_by(SUBJECT_ID, HADM_ID) %>% 
+  summarise(total_cost = sum(avg_estim_dollar_sub)) %>% 
+  mutate(ORIGIN = "ft") 
+code_mm_cost <- diag_with_admits %>% 
+  anti_join(code_ft_cost) %>%  
+  #filter(grepl("585", ICD9_CODE)) %>% 
+  filter(ICD9_CODE == t_code) %>% 
+  select(SUBJECT_ID, HADM_ID) %>% 
+  inner_join(diag_with_admits) %>% 
+  inner_join(estim_dollar_per_ICD9_medicare) %>% group_by(SUBJECT_ID, HADM_ID) %>% 
+  summarise(total_cost = sum(avg_estim_dollar_sub)) %>% 
+  mutate(ORIGIN = "mm")
+
+ try(wilcox.test(code_ft_cost$total_cost, code_mm_cost$total_cost)[["p.value"]])
+
+
+# bind_rows(code_mm_cost, code_ft_cost) %>% 
+#   ggplot() + 
+#   geom_boxplot(aes(x=ORIGIN, y=total_cost))
+# rm(code_mm_cost, code_ft_cost, t_code)
+}
+
+check_total_diff("585")
+```
+```{r}
+filter(ft_notes_mapped_novel_code, ICD9_CODE == "585")
+```
+
+```{r}
+icd_counts_annotated %>% filter(parent_code == "585")
+icd_counts_annotated
+```
+
+
+
+```{r}
+k <-  avg_diff_cost %>% filter(delta > 5000) %>% select(SUBJECT_ID, HADM_ID) %>% distinct() %>% inner_join(diag_ICD9_with_ft_ICD9_with_cost) %>% 
+  filter(CODE_ORIGIN == "freetext_note") %>% pull(ICD9_CODE) %>% table %>% sort(decreasing = T) %>% head(100) %>% names
+res <- sapply(k, suppressMessages(check_total_diff))
+{res *100} %>% .[. <=.05]
+```
+
+
+```{r}
+res_1000 <- res
+{res_1000 *1000} %>% .[. <=.05]
+```
+
+
+-----
+
+```{r}
+load("Rdata/ICD9_ref_mapped_to_snomed.Rdata")
+
+unique_and_strp <- function(x){
+  x <- unique(x)
+  x <- x[x!="NULL"]
+  if(length(x) == 0){
+    return(NA)
+  }else{
+    return(x)
+  }
+}
+
+
+icd2snomed_set <-  icd_reference_with_snomed %>% as_tibble %>% group_by(ICD9_CODE, parent_code_num) %>% 
+  summarise(SIDS_l = ifelse(SNOMED_CID == "NULL", NA, list(unique_and_strp(SNOMED_CID)))) %>% distinct %>% 
+  mutate(SIDS_l = replace(SIDS_l, SIDS_l == "NULL", NA))
+load('Rdata/ICD9_diag_codes_by_patient_visit.Rdata')
+
+icd_diag_2_snomed <- left_join(diag_with_admits,icd2snomed_set) %>% 
+  mutate(icd_SIDS = replace(SIDS_l, SIDS_l == "NULL", NA), 
+         UID = paste(SUBJECT_ID, HADM_ID, sep = "-"))
+
+
+
+
+# icd_diag_snomed_with_ft_mapping <- left_join(icd_diag_2_snomed, free_text_mapping_results)
+# free_text_mapping_results %>%
+```
+
+If any term in the ICD9 SID set matches a term in the freetext diagnosis SID set, we'll call it a match
+
+```{r}
+# icd_diag_sid_uset <- icd_diag_2_snomed %>% group_by(UID) %>% summarise(icd_SID_uset = list(unlist(icd_SIDS) %>% unique ) )
+# ft_sid_uset <- free_text_mapping_results %>% group_by(UID) %>% summarise(ft_SID_uset = list(unlist(ft_SIDS) %>% unique ) )
+# 
+# any_ft_match_icd <- inner_join(icd_diag_sid_uset,ft_sid_uset)
+# any_ft_match_icd$mapping_overlap <- sapply(1:nrow(any_ft_match_icd), function(i) 
+#   intersect(any_ft_match_icd$icd_SID_uset[[i]], any_ft_match_icd$ft_SID_uset[[i]]) %>% length)
+# sum(any_ft_match_icd$mapping_overlap > 0)
+# valid_uids <- filter(any_ft_match_icd, mapping_overlap > 0) %>% pull(UID)
+# 
+# icd_diag_valid_sid_long <- icd_diag_2_snomed %>% filter(UID %in% valid_uids) %>% select(-SIDS_l) %>% unnest(icd_SIDS) %>% distinct %>% 
+#   rename(SIDS = icd_SIDS)
+# ft_valid_sid_long <- free_text_mapping_results %>% filter(UID %in% valid_uids) %>% unnest(ft_SIDS) %>% rename(SIDS=ft_SIDS) %>% distinct
+# matches_icd_diag_ft <- inner_join(icd_diag_valid_sid_long, ft_valid_sid_long)
+```
+
+For all terms that did not match a code specific to a visit, see if it matches *any* ICD9 code 
+
+```{r}
+all_ICD_SIDS <- icd2snomed_set$SIDS_l %>% unlist %>% unique
+unmatched_ft_in_ICD <-  free_text_mapping_results %>%
+  filter(ft_SIDS != "") %>% 
+  mutate(any_match_ICD = sapply(.$ft_SIDS,  function(x) any(x %in% all_ICD_SIDS)) )
+
+icd2snomed_set_long <- icd2snomed_set %>% unnest(SIDS_l) %>% rename(SIDS = SIDS_l)
+matched_anyicd_ft <-  unmatched_ft_in_ICD %>% filter(any_match_ICD) %>% unnest() %>% rename(SIDS=ft_SIDS) %>% 
+  inner_join(icd2snomed_set_long) %>% 
+  anti_join(icd_raw %>% select(SUBJECT_ID, HADM_ID, ICD9_CODE) )%>% 
+              distinct() %>% 
+  filter(ICD9_CODE %in% estim_cost_per_ICD9$ICD9_CODE)
+n_distinct(matched_anyicd_ft$UID)
+```
+
+remove matches that are commonly found in ICD, and remove matches that are NEC/NOS/unspec terms 
+
+```{r}
+q <- as.integer(quantile(icd_code_counts_annotated$count, .85))
+q
+top_n_icd <- filter(icd_code_counts_annotated, count > q) %>% pull(ICD9_CODE)
+nec_noc_other_terms <- icd_code_counts_annotated %>% 
+  filter(grepl('NOS|NEC|unspec|oth |Other', SHORT_TITLE, ignore.case = T)) %>% pull(ICD9_CODE) 
+
+matched_anyicd_ft_filtered <-  matched_anyicd_ft %>% 
+  filter(!ICD9_CODE %in% top_n_icd) %>% 
+  filter(!ICD9_CODE %in% nec_noc_other_terms) %>% 
+  filter(!ICD9_CODE %in% c("40401", "40411","40412", "40413"))
+
+matched_anyicd_ft_filtered %>% pull(UID) %>% n_distinct
+
+
+```
+
+
+```{r}
+matched_anyicd_ft_filtered %>% pull(ICD9_CODE) %>% table %>% sort
+```
+
+Some notes from looking at cases up here
+- some are minor conditions, ie 36634-cataracts, or 4770 - rhinitis 
+- others are chronic diseases - Chronic, and it sounds like patients are coming in for 
+
+```{r}
+
+matched_anyicd_ft_filtered %>% filter(ICD9_CODE == "5821") %>% select(SUBJECT_ID, HADM_ID) %>% inner_join(diag_with_admits)%>% 
+   inner_join(estim_cost_per_ICD9) %>% 
+  group_by(SUBJECT_ID, HADM_ID) %>% 
+  summarise(avg_cost = mean(avg_cost_per_ICD, na.rm = T)) %>% 
+  pull(avg_cost) %>% 
+  qplot(y=., geom='boxplot')
+```
+
+Hypothesis 1: ft_codes are not added to diag_codes because ft_codes cost more than diag_codes, because doctors opt for a cheaper code vs the more expensive code 
+
+Hypothesis 2: ft_codes are not added because doctors opt for a more expensive option
+
+Hypothesis: 3 more used terms -> more money 
+
+
+```{r}
+diag_with_admits %>% 
+   filter(ICD9_CODE == "5821") %>% 
+   select(SUBJECT_ID, HADM_ID) %>% 
+   inner_join(diag_with_admits) %>% 
+   inner_join(estim_cost_per_ICD9) %>% 
+  group_by(SUBJECT_ID, HADM_ID) %>% 
+  summarise(avg_cost = mean(avg_cost_per_ICD, na.rm = T))%>% 
+  pull(avg_cost) %>% 
+  qplot(y=., geom='boxplot')
+
+
+  
+```
+
+```{r}
+
+diag_with_admits %>% 
+    filter(ICD9_CODE == "36634") #%>% 
+  #  select(SUBJECT_ID, HADM_ID) %>% 
+  #  inner_join(diag_with_admits) %>% 
+  #  inner_join(estim_cost_per_ICD9) %>% 
+  # group_by(SUBJECT_ID, HADM_ID) %>% 
+  # summarise(avg_cost = mean(avg_cost_per_ICD, na.rm = T))%>% 
+  # pull(avg_cost) %>% 
+  # qplot(y=., geom='boxplot')
+
+
+```
+
+
+
+
+```{r}
+filtered_matches_cost_comparison <-  matched_anyicd_ft_filtered %>% select(SUBJECT_ID, HADM_ID) %>% inner_join(diag_with_admits) %>% left_join(estim_cost_per_ICD9) %>% 
+  group_by(SUBJECT_ID, HADM_ID) %>% 
+  summarise(mean_cost = mean(avg_cost_per_ICD, na.rm = T), 
+            med_cost = median(avg_cost_per_ICD, na.rm = T), 
+            max_cost = max(avg_cost_per_ICD, na.rm = T), 
+            min_cost = min(avg_cost_per_ICD, na.rm = T)
+            ) %>% 
+  inner_join(matched_anyicd_ft_filtered) %>% 
+  left_join(estim_cost_per_ICD9) %>% 
+  mutate(
+    mean_delta = mean_cost - avg_cost_per_ICD,
+    med_delta = med_cost - avg_cost_per_ICD,
+    max_delta = max_cost - avg_cost_per_ICD,
+    min_delta = min_cost - avg_cost_per_ICD
+    
+  )
+``` 
+
+
+```{r}
+filtered_matches_cost_comparison %>% filter(ICD9_CODE == "7272") 
+```
+
+
+
+```{r}
+matched_anyicd_ft_filtered %>% filter(ICD9_CODE == "7272") %>% 
+  select(SUBJECT_ID, HADM_ID) %>% 
+  inner_join(diag_with_admits) %>% 
+ inner_join(icd_code_counts_annotated %>% select(ICD9_CODE, LONG_TITLE)) %>% 
+  View
+```
+
+subset to ft_codes that either
+- have the same parent code as the 
+
+
+```{r}
+icdcode2parentcode <- icd_code_counts_annotated %>% select(ICD9_CODE, parent_code_num) %>% distinct()
+
+icdcode2parentclass <- icd_code_counts_annotated %>% select(ICD9_CODE, parent_code_class) %>% distinct()
+matched_code_same_parent <- icd_raw %>% 
+  select(SUBJECT_ID, HADM_ID, ICD9_CODE) %>% 
+  inner_join(icdcode2parentcode) %>%
+  select(-ICD9_CODE) %>% distinct %>% 
+  inner_join(matched_anyicd_ft_filtered ) 
+
+
+matched_code_same_parent_class <- icd_raw %>% 
+  select(SUBJECT_ID, HADM_ID, ICD9_CODE) %>% 
+  inner_join(icdcode2parentclass) %>%
+  select(-ICD9_CODE) %>% distinct %>% 
+  inner_join(matched_anyicd_ft_filtered %>% inner_join(icdcode2parentclass)) 
+```
+
+
+
+A ton of the matches are all 404 - Congestive heart failure; might want to remove them outright 
+
+```{r}
+matched_code_same_parent %>% select(SUBJECT_ID, HADM_ID) %>% inner_join(diag_with_admits) %>% left_join(estim_cost_per_ICD9) %>% 
+  group_by(SUBJECT_ID, HADM_ID) %>% 
+  summarise(mean_cost = mean(avg_cost_per_ICD, na.rm = T), 
+            med_cost = median(avg_cost_per_ICD, na.rm = T), 
+            max_cost = max(avg_cost_per_ICD, na.rm = T), 
+            min_cost = min(avg_cost_per_ICD, na.rm = T)
+            ) %>% 
+  inner_join(matched_code_same_parent) %>% 
+  left_join(estim_cost_per_ICD9) %>% 
+  mutate(
+    mean_delta = mean_cost - avg_cost_per_ICD,
+    med_delta = med_cost - avg_cost_per_ICD,
+    max_delta = max_cost - avg_cost_per_ICD,
+    min_delta = min_cost - avg_cost_per_ICD
+    
+  ) %>% View
+filter(matched_code_same_parent,  SUBJECT_ID == "10127", HADM_ID == "182839")
+```
+
+```{r}
+matched_code_same_parent_class %>% 
+  select(SUBJECT_ID, HADM_ID) %>% 
+  inner_join(diag_with_admits) %>% 
+  left_join(estim_cost_per_ICD9) %>% 
+  group_by(SUBJECT_ID, HADM_ID) %>% 
+  summarise(mean_cost = mean(avg_cost_per_ICD, na.rm = T), 
+            med_cost = median(avg_cost_per_ICD, na.rm = T), 
+            max_cost = max(avg_cost_per_ICD, na.rm = T), 
+            min_cost = min(avg_cost_per_ICD, na.rm = T)
+            ) %>% 
+  inner_join(matched_code_same_parent_class) %>% 
+  left_join(estim_cost_per_ICD9) %>% 
+  mutate(
+    mean_delta = mean_cost - avg_cost_per_ICD,
+    med_delta = med_cost - avg_cost_per_ICD,
+    max_delta = max_cost - avg_cost_per_ICD,
+    min_delta = min_cost - avg_cost_per_ICD
+    
+  ) %>% View
+```
+
+
+
+
+```{r}
+matched_anyicd_ft_filtered %>% 
+  inner_join(icdcode2parentcode) %>% 
+  filter(parent_code_num == 404) %>% 
+  pull(ICD9_CODE) %>% 
+  table
+
+
+```
+
+
+```{r}
+# common_cols <- intersect(colnames(matched_anyicd_ft), colnames(matches_icd_diag_ft) )
+# n_code_per_vis <- diag_with_admits %>% group_by(SUBJECT_ID, HADM_ID) %>% summarise(total_codes_per_vis = n()) 
+# 
+# # DC -> diag ICD code matched to freetext noteline 
+# # AC -> any ICD code matched to freetext noteline 
+# all_freetext_mapped_to_icd_matched_to_vist <- bind_rows(
+#   matched_anyicd_ft %>% select(all_of(common_cols)) %>% mutate(match_type = "AC"),
+#   matches_icd_diag_ft %>% select(all_of(common_cols)) %>% mutate(match_type = "DC")
+# ) 
+# 
+# UID_atleast_1_AC_DC_and_ICD_has_cost <-  all_freetext_mapped_to_icd_matched_to_vist %>% 
+#   filter(ICD9_CODE %in% estim_cost_per_ICD9$ICD9_CODE) %>% 
+#   group_by(UID) %>% 
+#   summarise(has_both_matches = all(c("AC", "DC") %in% match_type))%>% filter(has_both_matches) %>% pull(UID)
+# 
+# matching_results <-  matches_icd_diag_ft %>% 
+#   select(SUBJECT_ID, HADM_ID, ICD9_CODE) %>%
+#   distinct %>% 
+#   group_by(SUBJECT_ID, HADM_ID) %>% 
+#   summarise(total_mapped_codes =n() ) %>% 
+#   left_join(n_code_per_vis, .) %>% 
+#   mutate(total_mapped_codes = replace_na(total_mapped_codes, 0)) 
+# icd_raw %>% select(SUBJECT_ID, HADM_ID, ICD9_CODE) %>%  mutate(UID = paste(SUBJECT_ID, HADM_ID, sep = "-")) %>% filter(UID %in% UID_atleast_1_AC_DC_and_ICD_has_cost) %>% 
+#   left_join(matches_icd_diag_ft) %>% 
+#   group_by(UID) %>% 
+#   summarise(n_icd_diag = n(), 
+#             n_icd_matches_ft = sum(!is.na(freetext_noteline)))
+```
+
+----
+get financial data from BID hospital CMS xml (recovers 391/822 available codes)
+
+```{r}
+install.packages("xml2")
+library(xml2)
+
+x <- read_xml("042103881_beth-israel-deaconess-medical-center-inc_standardcharges.xml")
+payload <- as_list(x)
+
+
+names(payload$StandardCharges$Facility)
+lapply(payload$StandardCharges$Facility, length)
+
+charge_l <- payload$StandardCharges$Facility[[5]]
+
+names(charge_l[[1]])
+t_tags <- c("Descr","GrossCharge", "DiscountCashCharge", "MinNegotiatedCharge", "MaxNegotiatedCharge")
+parse_charge_l <- function(charge_l){
+  lapply(charge_l, function(x){
+  if (length(unlist( x[t_tags])) != 5){
+    return(tibble())
+  }
+  res <- x[t_tags] %>% as.data.frame %>% as_tibble 
+
+  colnames(res) <- t_tags
+  res
+  }) %>% bind_rows
+}
+
+cms_xml_parsed <- lapply(payload$StandardCharges$Facility[3:6], parse_charge_l) %>% bind_rows()
+
+splitl <- function(x, n){
+  psl <- str_split(x, " ") %>% unlist
+  tibble(DRG =psl[1], MDC = psl[2], MS = psl[n], Description = paste(psl[(n+1):length(psl)], collapse = " "))
+}
+k <- read_tsv("~/Downloads/MSDRGv39/appendix_A.txt", skip = 11, col_names = "raw", n_max = 17) %>% 
+  pull(raw) %>% 
+  lapply(function(x) splitl(x, 3)) %>% 
+  bind_rows()
+j <- read_tsv("~/Downloads/MSDRGv39/appendix_A.txt", skip = 11+17, col_names = "raw") %>% 
+  pull(raw) %>% 
+  lapply(function(x) splitl(x, 4)) %>% 
+  bind_rows()
+res <- bind_rows(k,j)
+
+drg_grouper_descr <- res$Description %>% tolower() %>% str_remove_all("^ p |^ m ") %>% str_squish() %>%
+  str_replace_all("w/o|w\\./o\\.", "without") %>% 
+  str_replace_all("w/", "with") %>% 
+  str_replace_all("<|>|/", " ") %>% str_replace_all("\\.|-|,","") %>% 
+  str_replace_all("&", " and ") %>% 
+  str_split(" ") %>% 
+  lapply(function(x) x[x!=""])
+cms_xml_descr <- cms_xml_parsed$Descr %>% tolower %>% 
+  str_replace_all("w/o|w\\./o\\.", "without") %>% 
+  str_replace_all("w/", "with") %>% 
+  str_replace_all("<|>|/", " ") %>% str_replace_all("\\.|-|,","") %>% 
+  str_replace_all("&", " and ") %>%  str_split(" ") %>% 
+  lapply(function(x) x[x!=""])
+m <- lapply(drg_grouper_descr, function(x){
+          matches <- sapply(seq_along(cms_xml_descr), function(y){
+            if(all(x %in% cms_xml_descr[[y]])) return (y)
+            return(-1)
+            
+          } )
+          
+          if(all(matches == -1)){
+            return(-1)
+          } else{
+            return(matches[matches != -1])
+          }
+}
+)
+m %>% unlist %>% {sum(. != -1)}
+```
+
+
+
+
+
+```{r}
+targets = DRG_codes_raw %>% filter(DRG_CODE %in% medicare_drg_codes) %>% select(SUBJECT_ID, HADM_ID) %>% distinct %>% 
+  sample_n(5000)
+targetSUBJs <- targets$SUBJECT_ID
+targetHADMs <- targets$HADM_ID
+save(targetSUBJs,targetHADMs,  file = 'Rdata/target_ids.Rdata')
+
+
+write(unique(diag_icd$SUBJECT_ID), "uniqSUBJs.txt", sep = '\n')
+write(unique(diag_icd$HADM_ID), "uniqHADM.txt", sep = "\n")
+write(unique( (paste( diag_icd$SUBJECT_ID,diag_icd$HADM_ID, sep = "-"))), "uniqUIDs.txt", sep = "\n")
+```
+
+
+```{r}
+k <- scan("/Users/vinayswamy/testing/test_callmm/all_found_uids,txt", character(), sep = "\n")
+n_distinct(k)
+
+uid_counts <- table(k) %>% sort
+
+tail(uid_counts)
+```
+
+```{r}
+load('Rdata/icd_counts_annotated_with_depth.Rdata')
+target_ICD = filter(icd_counts_annotated_with_depth, parent_code_class  == "Respiratory disease") %>% pull(ICD9_CODE)
+target_HADMs =filter(icd_raw, ICD9_CODE %in% target_ICD ) %>% select(SUBJECT_ID, HADM_ID) %>% distinct
+```
+
+
