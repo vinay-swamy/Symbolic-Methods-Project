@@ -18,24 +18,32 @@ Overall research question: What are the characteristics of ICD9 code usage, and 
 ```{r}
 library(tidyverse)
 load('Rdata/icd_code_reference_and_counts.Rdata')
+load('Rdata/ICD9_diag_codes_by_patient_visit.Rdata')
+
 ```
 
 
 There are 12167 total ICD9 terms. The number of them that are used in mimic:
 
 ```{r}
-sum(icd_code_counts_annotated$count != 0)
+N_icd_total = nrow(icd_code_counts_annotated)
+N_parent_class = n_distinct(icd_code_counts_annotated$parent_code_class)
+N_icd_used = sum(icd_code_counts_annotated$count != 0)
+N_icd_unused = sum(icd_code_counts_annotated$count == 0)
+N_patients = diag_with_admits %>% select(SUBJECT_ID, HADM_ID) %>% n_distinct
+N_total_icd = diag_with_admits %>% nrow()
+max_icd_code = icd_code_counts_annotated[which.max(icd_code_counts_annotated$count),]
 ```
 
 So a little over half the ICD9 terms are not used.
 
-This is what the distribution of counts looks like for the unused terms 
+This is what the distribution of counts looks like for the used terms 
 
-```{r}
+```{r,}
 icd_code_counts_annotated %>% filter(count!=0) %>% 
   mutate(k='ICD9') %>% 
 ggplot(aes(x=k, y=count))+
-  geom_violin()+
+  geom_violin(width = .5)+
   geom_boxplot(width=.05)+
   xlab('')+
   ylim(c(0, 100))+
@@ -96,7 +104,9 @@ so roughly  1700 terms do have a mapping to snomed
 icd_counts_annotated_with_depth <- icd_counts_annotated_with_depth %>% 
   filter(!is.na(avg_depth))
 ggplot(icd_counts_annotated_with_depth) +
-  geom_boxplot(aes(x=is_unused, y=avg_depth))
+  geom_boxplot(aes(x=is_unused, y=avg_depth))  +
+  xlab("")+
+  theme_minimal()
 ```
 
 So at first glance, it seems like there's no difference between the granularity of used and un-used terms 
@@ -158,7 +168,7 @@ sum(icd_code_counts_annotated$count > 25)
 ```
 
 ```{r}
-
+library(patchwork)
 tdiff <- function(x){
   if(length(x) >1){
    combn(x, 2) %>% t %>% {paste(.[,1] , .[,2], sep = " - " )}
@@ -185,10 +195,22 @@ depth_by_bin <-  icd_counts_annotated_with_depth %>%
     count >=5 & count <25 ~ "[5, 25)",
     count >= 25 ~ ">=25"
   ) ) 
-ggplot(depth_by_bin)+
+
+counts_by_bin = depth_by_bin %>% group_by(count_bin) %>% count %>% 
+  mutate(count_bin = factor(count_bin, levels = c("0","1","[2,5)","[5, 25)",">=25")))
+
+cb <- ggplot(counts_by_bin) + 
+  geom_col(aes(x=count_bin, y=n)) + theme_minimal()
+
+
+db <- ggplot(depth_by_bin %>% mutate(count_bin = factor(count_bin, levels = c("0","1","[2,5)","[5, 25)",">=25")) ) )+
   geom_boxplot(aes(x = count_bin, y= avg_depth)) + 
   theme_minimal()
+cb/db
 
+```
+
+```{r}
 ggplot(icd_counts_annotated_with_depth %>% filter(), aes(x= count, y = avg_depth)) + 
   geom_point() + 
   geom_smooth(method = 'lm') + 

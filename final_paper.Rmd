@@ -1,0 +1,79 @@
+---
+title: "Final paper"
+output: html_notebook
+---
+
+## Introduction
+
+
+
+
+## Materials and Methods 
+
+### Relevant data 
+
+The primary data source for this project is the MIMIC III data set<cite>. MIMIC III was downloaded from XXX on October 
+
+
+### Counting ICD9 codes 
+Data in MIMIC is organized at the per-patient , per-hospital visit. Each distinct combination of patient and vist is refered to a case here after. The table XXX from the MIMIC data was used to used to calculate the count of each ICD9 code. A code is assigned a count for each distinct entry per case
+
+### Estimation of ICD9 term granularity
+
+A mapping between ICD9 and SNOMED-CT<cite> was downloaded from XXX. The SNOMED concept relationships were downloaded from XXX. To re-construct the SNOMED hierarchy as a graph, the "is-a" (ID: XXX) relationships were extracted from the relationship file. The graph was constructed using the NetworkX library in python<cite>. Djikstra's algorithm was used to calculate the distance of each term to the root node.<cite> These distances were then mapped back to ICD9 codes via the downloaded mapping.
+
+### Standardizing DRG code in MIMC III
+
+The DRG codes available in MIMIC table XXX contain two versions of DRG code: HCFA and MS. A pdf table mapping HCFA to DRG codes was obtained from XXX. The text extraction tool tabula was used to extract relevant mapping between  HCFA and MC drg codes. HCFA codes that did not map to MS codes were dropped
+
+### Calculation of ICD9 code cost
+Medicare data for 2015-19 was downloaded from XXX on XXX. The submitted costs column was averaged across all centers years to obtain an overall average cost per DRG code. Cost was assigned to ICD9 codes at the case level, and decomposed as a weighted average as follows: 
+For a case with a set of codes  with a set of priorities p and DRG cost $d$ then the cost of code $i$ $c_i = \frac{d}{(\sum{\frac{1}{p}}) * p_i } $
+
+### Extraction of ICD9 terms from freetext notes. 
+
+#### Parsing freetext notes
+
+The `NOTEEVENTS.csv` file contains multiple types() freetext notes organized at the case level. Diagnoses at time of discharge were extracted as follows:
+1. First, notes were filtered to keep only discharge reports
+2. Within the freetext discharge report, the following headers were searched for: {"","","",""}. 
+3. Once a header was found, all ensuing line of text were extracted until a blank line was reached. 
+4. The extracted text was then split by newline, with each distinct line considered a separate diagnosis at time of discharge.
+
+#### Extraction of UMLS CUIs from text and Mapping to ICD9.
+Each distinct diagnosis was run through MetaMapLite using default settings and using the 2021AB XXX<index>. Each CUI was converted to ICD9 using a mapping constructed as follows.
+First, CUIs were directly mapped to ICD9 via the UMLS Metathesaurus. CUIs that did not map to ICD9 in this step, were then mapped to SNOMED-CT terms, which were then mapped to ICD9 via the mapping previously described. CUIs that were not mapped at this stage were then mapped to ICD10. A mapping from ICD10 to ICD9 was obtained from <XXX> to map these ICD10 codes to ICD9. At this point, any CUIs that were not mapped were dropped from further analysis. ICD9 codes extracted from notes via this method are referred to as freetext ICD9 codes hereafter. 
+The set of ICD9 codes was then filtered to remove codes that were already present in the set of billed ICD9 codes, at the case level. Freetext ICD9 codes were further filtered to remove codes that were of type NOC/NEC<rephrase>. NOC/NEC codes were identified by searching for the following pattern in the title of the code:{"","",...}. This filtered set of codes was used for further analysis. 
+
+
+## Code
+
+The python, rust, and R programming languages were used for different parts of this project. Python was used for the SNOMED graph construction, rust for parsing free-notes and running MetaMap, and R for data analysis and visualization. All code for this project is available at XXX. The R and rust are presented as an installable R package. 
+
+## Results 
+
+### ICD9 codes are generally unique to patient across multiple visits
+
+The first major task in this project was to decide how to define a count of a code. Calculation of the counts at the case was the most straight forward method because almost the all the data in MIMIC III is organized at the case level. However, this may lead to an individual having the same code assigned across multiple visits, potentially inflating code counts. In order to assess this, we additionally counted codes at the patient level. We found that although a single patient often visits the hospital XXX times on average, the overwhelming majority of codes were used only once per patient across all visits. 
+<Fig 1 A VP of patient visits, B VP of counts per patient >
+
+### Majority of codes are used infrequently or not at all in MIMIC III data.
+
+Counting usage of ICD9 usage showed that the majority of ICD9 codes are not used at all across the entire MIMIC dataset. Of those that are used, XXX are used less than 5 times across the dataset.
+
+### Granularity estimated via depth in the SNOMED hierarchy does not efectively separate codes.
+
+Previous work on the usage of ICD9 codes has shown that ICD9 codes often lack the granularity to properly describe different diseases. <cite>. Because of this, we were curious whether there were systematic differences between terms of different granularity. Determining the granularity of terms generally requires manual assessment by an expert. We instead wanted a computational method for assigning granularity. Our solution was to first map ICD9 codes to SNOMED, and then calculate the distance of each SNOMED term to the root node. We reasoned that this would a reasonable method for estimating granularity because hierarchical organization of terms generally stratifies them by granularity.
+
+<Fig 2 Box plots of Used/ Unused, Used by bin >
+
+This method failed to show any difference between terms, both between used and unused codes, and different bins of codes. 
+
+## Weak positive correlation between ICD9 code usage and code cost
+A previous study reported financial bias in electronic health records<https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5997930/>. We were curious to see whether any such bias was quantifiable from the count data we had.
+
+
+## Conclusion
+
+
+## References 

@@ -26,6 +26,12 @@ raw_mapping_has_result <- raw_mapping_results %>%  filter(!is.na(freetext_noteli
 
 ```
 
+```{r}
+N_noteline_extracted <- filter(raw_mapping_results,!is.na(freetext_noteline)) %>% nrow 
+N_cases_with_noteline <- filter(raw_mapping_results,!is.na(freetext_noteline)) %>% select(SUBJECT_ID, HADM_ID) %>% distinct %>% nrow
+N_noteline_with_CUI
+N_CUI_extracted <- raw_mapping_has_result %>% pull(CUI_strl) %>% str_split(',') %>% unlist %>% length()
+```
 
 Get CUI to SNOMED and CUI to ICD9 mapping
 
@@ -125,6 +131,12 @@ ft_notes_mapped_to_ICD9_clean <- bind_rows(
 ```
 
 
+```{r}
+N_CUI_mapped_ICD9 <- ft_notes_mapped_to_ICD9_clean %>% select(SUBJECT_ID, HADM_ID, freetext_noteline, CUI) %>% distinct %>% nrow
+N_cases_mapped_ICD <- ft_notes_mapped_to_ICD9_clean %>% select(SUBJECT_ID, HADM_ID) %>% distinct %>%  nrow
+```
+
+
 
 ```{r}
 load('Rdata/ICD9_diag_codes_by_patient_visit.Rdata')
@@ -150,6 +162,32 @@ ft_notes_mapped_novel_code %>% select(SUBJECT_ID, HADM_ID) %>% distinct %>% nrow
 
 ```
 
+
+```{r}
+ft_notes_mapped_to_ICD9_clean %>% left_join(diag_with_admits %>% select(SUBJECT_ID, HADM_ID, ICD9_CODE) %>% mutate(code_type = 'Matches Billed Code')) %>%
+  mutate(code_type = replace_na(code_type, "Novel Code") ) %>% 
+  mutate(code_type = case_when(
+             code_type == "Novel Code" & ICD9_CODE %in% nec_noc_other_terms ~ "NEC/NOC code", 
+             code_type == "Novel Code" & !(ICD9_CODE %in% nec_noc_other_terms) & ICD9_CODE %in% unused_codes ~ "Novel, Unused Code",
+             code_type == "Novel Code" & !(ICD9_CODE %in% nec_noc_other_terms) & !(ICD9_CODE %in% unused_codes) ~ "Novel, Used Code",
+             TRUE ~ code_type
+           ),
+         dv = "",
+         y=1
+         ) %>% 
+  group_by(code_type) %>% 
+  count %>% 
+  ggplot(aes(x="",y=n, fill = code_type)) + 
+  geom_bar(stat = "identity") + 
+  coord_polar("y", start=0) + 
+  ggtitle(paste0("n = ", nrow(ft_notes_mapped_to_ICD9_clean), " ICD9 Codes" )) +
+  guides(fill = guide_legend(title = ""))+
+  theme_void()
+```
+
+
+
+
 ```{r}
 diag_ICD9_with_ft_ICD9 <-  diag_with_admits  %>% 
   select(-contains("TIME")) %>% 
@@ -172,14 +210,23 @@ Via Medicare data
 ```{r}
 diag_ICD9_with_ft_ICD9_with_cost <- diag_ICD9_with_ft_ICD9 %>% inner_join(estim_dollar_per_ICD9_medicare)
 
-wilcox.test(diag_ICD9_with_ft_ICD9_with_cost %>% filter(CODE_ORIGIN == "freetext_note") %>% pull(avg_estim_dollar_sub), 
+pv = tibble(x= 1, y=18000, label= wilcox.test(diag_ICD9_with_ft_ICD9_with_cost %>% filter(CODE_ORIGIN == "freetext_note") %>% pull(avg_estim_dollar_sub), 
             diag_ICD9_with_ft_ICD9_with_cost %>% filter(CODE_ORIGIN != "freetext_note") %>% pull(avg_estim_dollar_sub)
-            )[['p.value']]
+            )[['p.value']] %>% signif(3) %>% {paste0("Wilcox p value = ",.)})
 
 
-ggplot(diag_ICD9_with_ft_ICD9_with_cost) + 
+ggplot(diag_ICD9_with_ft_ICD9_with_cost %>% 
+         mutate(CODE_ORIGIN = case_when(
+           CODE_ORIGIN == "freetext_note" ~ "freetext ICD9",
+           CODE_ORIGIN == "MIMIC-diag" ~ "billed ICD9"
+         ))) + 
   geom_boxplot(aes(x=CODE_ORIGIN, y =avg_estim_dollar_sub), outlier.shape = NA) +
-  ylim(c(0, 20000))
+  geom_label(data = pv ,aes(x=x, y=y, label= label))+
+  ylim(c(0, 20000)) + 
+  xlab("")+
+  ylab("Average Submitted Cost")+
+  ggtitle("Cost of freetext ICD9 codes vs billed ICD9 codes (outliers not shown)") +
+  theme_minimal()
 
 
 
@@ -216,8 +263,8 @@ ft_notes_mapped_novel_code %>% filter(ICD9_CODE == "41401")
 
 ```{r}
 
-check_total_diff <- function(t_code ){
-
+#check_total_diff <- function(t_code ){
+t_code = "585"
 code_ft_cost <- ft_notes_mapped_novel_code %>% 
   filter(ICD9_CODE == t_code) %>% 
   select(SUBJECT_ID, HADM_ID) %>% 
@@ -227,6 +274,7 @@ code_ft_cost <- ft_notes_mapped_novel_code %>%
   group_by(SUBJECT_ID, HADM_ID) %>% 
   summarise(total_cost = sum(avg_estim_dollar_sub)) %>% 
   mutate(ORIGIN = "ft") 
+
 code_mm_cost <- diag_with_admits %>% 
   anti_join(code_ft_cost) %>%  
   #filter(grepl("585", ICD9_CODE)) %>% 
@@ -240,9 +288,9 @@ code_mm_cost <- diag_with_admits %>%
  try(wilcox.test(code_ft_cost$total_cost, code_mm_cost$total_cost)[["p.value"]])
 
 
-# bind_rows(code_mm_cost, code_ft_cost) %>% 
-#   ggplot() + 
-#   geom_boxplot(aes(x=ORIGIN, y=total_cost))
+bind_rows(code_mm_cost, code_ft_cost) %>%
+  ggplot() +
+  geom_boxplot(aes(x=ORIGIN, y=total_cost))
 # rm(code_mm_cost, code_ft_cost, t_code)
 }
 
@@ -256,14 +304,20 @@ filter(ft_notes_mapped_novel_code, ICD9_CODE == "585")
 icd_counts_annotated %>% filter(parent_code == "585")
 icd_counts_annotated
 ```
+```{r}
+
+```
 
 
 
 ```{r}
-k <-  avg_diff_cost %>% filter(delta > 5000) %>% select(SUBJECT_ID, HADM_ID) %>% distinct() %>% inner_join(diag_ICD9_with_ft_ICD9_with_cost) %>% 
-  filter(CODE_ORIGIN == "freetext_note") %>% pull(ICD9_CODE) %>% table %>% sort(decreasing = T) %>% head(100) %>% names
-res <- sapply(k, suppressMessages(check_total_diff))
-{res *100} %>% .[. <=.05]
+high_positive_cost_diff <-  avg_diff_cost %>% filter(delta > 10000) %>% select(SUBJECT_ID, HADM_ID) %>% distinct() %>% inner_join(diag_ICD9_with_ft_ICD9_with_cost) %>% 
+  filter(CODE_ORIGIN == "freetext_note") %>% pull(ICD9_CODE) %>% table %>% sort(decreasing = T) %>% head(100) %>% names %>% 
+  {tibble(ICD9_CODE = .)} %>% inner_join(icd_code_counts_annotated)
+
+high_negative_cost_diff <- avg_diff_cost %>% filter(delta < -10000) %>% select(SUBJECT_ID, HADM_ID) %>% distinct() %>% inner_join(diag_ICD9_with_ft_ICD9_with_cost) %>% 
+  filter(CODE_ORIGIN == "freetext_note") %>% pull(ICD9_CODE) %>% table %>% sort(decreasing = T) %>% head(100) %>% names %>% 
+  {tibble(ICD9_CODE = .)} %>% inner_join(icd_code_counts_annotated)
 ```
 
 

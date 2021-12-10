@@ -72,6 +72,24 @@ diag_with_admits <-  admissions %>% left_join(diag_icd) %>% mutate(ADMITTIME = a
                                                                    )
 ```
 
+
+rationale about how to use counts 
+
+```{r}
+
+diag_with_admits %>% group_by(SUBJECT_ID, ICD9_CODE) %>% count %>% mutate(x="C") %>% 
+  ggplot(aes(x=x, y=n)) + 
+  geom_violin() + 
+  ylim(c(0,10))
+
+```
+
+```{r}
+
+```
+
+
+
 Data is mostly complete; only 47 patients have no ICD code 
 
 We'll define a count as each distinct entry of a code; in the future, we might consider distinct per patient 
@@ -150,6 +168,13 @@ save(icd_code_counts_annotated, file = "Rdata/ICD9_mimic3_counts.Rdata")
 
 ```
 
+```{r}
+N_1t1_icd_snomed = icd_reference_with_snomed %>% filter(type == "1-to-1") %>% pull(ICD9_CODE) %>% n_distinct
+N_missing_icd_snoemd = icd_reference_with_snomed %>% filter(is.na(SNOMED_CID)) %>% select(ICD9_CODE, SNOMED_CID) %>% distinct %>% nrow
+N_1tm_icd_snomed <- nrow(icd_reference) - N_1t1_icd_snomed - N_missing_icd_snoemd
+
+```
+
 
 bash 
 ```
@@ -173,6 +198,15 @@ ICD9_depth <- filter(icd_reference_with_snomed, !is.na(SNOMED_CID)) %>%
 save(ICD9_depth, file = "Rdata/ICD9_depth.Rdata")
 ```
 
+```{r}
+bind_rows(
+ snomed_depth %>% select(depth) %>% mutate(terminology = "SNOMED-CT"), 
+ ICD9_depth %>% select(depth = avg_depth) %>% mutate(terminology = "ICD9CM")
+) %>% 
+  ggplot(aes(x=terminology, y = depth)) + 
+  geom_violin() + 
+  theme_minimal()
+```
 
 
 

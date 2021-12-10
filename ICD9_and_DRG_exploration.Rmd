@@ -162,6 +162,35 @@ estim_dollar_per_ICD9_medicare <- ICD9_mapped_to_medicare_dollar %>% group_by(IC
 
 ```
 
+```{r}
+N_medicare_DRG = all_medicare_billing_data %>% pull(DRG_Cd) %>% n_distinct()
+N_mimic_DRG = DRG_codes_raw %>% pull(DRG_CODE) %>% n_distinct()
+N_commmon_DRG = length(intersect(all_medicare_billing_data$DRG_Cd, DRG_codes_raw$DRG_CODE))
+N_mappa
+```
+
+```{r, fig.width =4}
+ggplot(estim_dollar_per_ICD9_medicare %>% mutate(x='')) + 
+  geom_boxplot(aes(x=x, y=avg_estim_dollar_sub), width=.5) + 
+  ylim(c(0, 20000)) + 
+  ylab("Average Submitted Cost") +
+  xlab("ICD9 Code") +  + 
+  theme_minimal()
+  
+```
+
+```{r}
+ggplot(estim_dollar_per_ICD9_medicare %>% mutate(x='') %>% mutate(frac_ri = avg_estim_dollar_rec / avg_estim_dollar_sub)) + 
+  geom_boxplot(aes(x=x, y=frac_ri), width=.5) + 
+
+  ylab("Average Submitted Cost") +
+  xlab("ICD9 Code") +   
+  theme_minimal()
+  
+```
+
+
+
 Method 2: using BID CMS transparency xml
 
 
@@ -273,14 +302,52 @@ cost_with_counts <-  inner_join(icd_code_counts_annotated,  estim_dollar_per_ICD
   mutate(frac_rec = avg_estim_dollar_rec/avg_estim_dollar_sub, 
          j= 1/avg_estim_dollar_sub)
 
-cost_with_counts %>% select(count, avg_estim_dollar_sub) %>% cor(method = 'spearman')
+spcor <- cost_with_counts %>% select(count, avg_estim_dollar_sub) %>% cor(method = 'spearman') %>% .[1,2] %>% round(2)
 
 ggplot(cost_with_counts, aes(x=count, y = avg_estim_dollar_sub)) + 
-  geom_point(alpha = .2) 
+  xlim(c(0, 1000))+
+  ylim(c(0,100000))+
+  geom_point(alpha = .2)  + 
+  geom_label(data = tibble(count =750 , avg_estim_dollar_sub = 75000, text = paste("Spearman correlation:", spcor)),
+             aes(x=count, y = avg_estim_dollar_sub, label = text)
+             )+
+  xlab("ICD9 Code Count") + 
+  ylab("Average Submitted Cost")+
+  theme_minimal() + 
+  theme_minimal()
 
 ```
 
+```{r}
+cost_with_counts_binned <-  cost_with_counts %>%   mutate(count_bin = case_when(
+    count ==  0 ~ "0",
+    count == 1 ~ "1", 
+    count >=2 & count <5 ~ "[2,5)",
+    count >=5 & count <25 ~ "[5, 25)",
+    count >= 25 ~ ">=25"
+  ) ) %>% mutate(count_bin = factor(count_bin, levels = c("0","1","[2,5)","[5, 25)",">=25"))) 
+avg_cost_per_bin <- cost_with_counts_binned %>% group_by(count_bin) %>% 
+  summarise(avg_cost = mean(avg_estim_dollar_sub)) %>% 
+  mutate(k="Average Cost")
+aov_lab <- tibble(x=1.5, y=22000, text = summary(k)[[1]][["Pr(>F)"]][1] %>% round(5) %>% {paste0("Anova p value = ",.)} )
+ggplot(cost_with_counts_binned) + 
+  geom_boxplot(aes(x=count_bin, y=avg_estim_dollar_sub), outlier.shape = NA) + 
+  geom_point(data = avg_cost_per_bin, aes(x=count_bin, y=avg_cost ,color =k ))+
+  geom_label(data = aov_lab, aes(x=x, y=y, label =text))+
+  guides(color = guide_legend(title = ""))+
+  theme_minimal()+
+  ggtitle("Cost per count bin (outliers not shown)")+
+  ylim(c(0,25000)) + 
+  xlab("Count Bin") + 
+  ylab("Average Submitted Cost")
+```
 
+```{r}
+library(ggpubr)
+
+ggboxplot(cost_with_counts_binned, x = "count_bin", y='avg_estim_dollar_sub') + 
+ 
+```
 
 
 
