@@ -1,79 +1,279 @@
 ---
-title: "Final paper"
-output: html_notebook
+title: "A Survey of Biases Affecting ICD9 Code Usage in the MIMIC-III dataset"
+author: "Vinay S. Swamy"
+institute: Department of Biomedical Informatics, Columbia Univeristy
+output:
+  word_document:
+    reference_docx: reference_doc_v1.docx
+    keep_md: yes
+csl: vancouver.csl
+bibliography: paper.bib
 ---
+  <!-- # pandoc_args: -->
+  <!-- #   - '--lua-filter=scholarly-metadata.lua' -->
+  <!-- #   - '--lua-filter=author-info-blocks.lua' -->
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( echo = F, warning = F, message = F)
+library(tidyverse)
+library(patchwork)
+load('Rdata/initial_count_data_exploration.Rdata')
+load('Rdata/initial_count_data_exploration_plotdata.Rdata')
+load('Rdata/ICD9_and_DRG_exploration_countdata.Rdata')
+load('Rdata/ICD9_and_DRG_exploration_plotdata.Rdata')
+load('Rdata/freetext_mapping_plotdata.Rdata')
+load('Rdata/freetext_mapping_countdata.Rdata')
+```
 
+## Abstract 
+
+  We attempted to identify terminological, financial and encoding biases in electronic health records, specifically from ICD9 code counts in the MIMIC-III dataset. To assess terminological biases, we compared the granularity of used and unused terms using a method based on mapping terms to the SNOMED hierarchy, and found no difference in granularity between used and unused terms with this method. We assessed financial biases by first estimating the cost per ICD9 code using medicare billing data, and then identified a weak positive correlation between ICD9 code count and estimated ICD9 cost. Finally, we examined encoding biases between billed codes and freetext notes, and found codes extracted by NLP mapping from notes that were not present in the case-level set of billed codes. 
+  
 ## Introduction
 
+  The international classification of disease, 9th edition, clinical modification (ICD9) is a widely used medical terminology. [@medicode_firm_icd-9-cm_1996] First used in 1979, ICD9 is designed to describe the full spectrum of human disease, primarily for billing purposes. ICD9 is has been used ubiquitously across medical centers in the United States, and so recorded ICD9 codes within the electronic health record (EHR) are a valuable source of public health data. Because of this the observed usage of ICD9 codes can help estimate disease prevalence across different populations. [@adjemian_prevalence_2012] In addition to this, ICD9 coding data has been a critical part of many observational health data studies. [@callaghan_longitudinal_2015], [@imran_phenotyping_2018], [@davis_identification_2015] Therefore, an accurate understanding of the different factors that affect the observed usage of ICD9 codes is useful for such studies.
 
+  There are many factors that affect the observed usage of ICD9 codes. Some of these factors are naturally occurring such as medical setting(inpatient, outpatient, etc), while other factors occur because of some human originating bias. Indeed, multiple studies have reported biases that affect the observed record of ICD9 codes.[@verheij_possible_2018] For example, Mclynn et al. showed that ICD9 codes have low positive predictive value for obesity when compared to the gold standard of body mass index, because ICD9 codes for obesity were erroneously assigned with other co-morbidities. [@mclynn_inaccuracies_2018] This study follows a common approach, where a small set of ICD9 codes are evaluated in a specific disease context. However, few studies have systematically evaluated *all* ICD9 codes across an EHR dataset. 
 
+  In this study, we attempt to identify systematic biases in ICD9 code usage directly from observed counts of ICD9 codes from EHR data. We used data from the Medical Information Mart for Intensive Care III dataset (MIMIC), a publicly available EHR dataset. MIMIC contains EHRs from the intensive care unit (ICU) of the Beth Israel Deaconess medical center between the years of 2001-2012. This dataset contains `r toString(N_patients_mimic)`  distinct patients, `r toString(N_cases)` distinct patient visits, and `r toString(N_icd_codes_mimic)` billed ICD9 codes. There are three directions we aim to explore. First, we examine terminological sources of bias, or choices in the design of ICD9 that lead to biases in its usage. Second, we examine financial biases, or observable differences in count usage due to the cost associated with a code. Third, we explore encoding biases, or differences between the medical information present in free-text and billed codes. 
 
 ## Materials and Methods 
 
-### Relevant data 
-
-The primary data source for this project is the MIMIC III data set<cite>. MIMIC III was downloaded from XXX on October 
-
-
 ### Counting ICD9 codes 
-Data in MIMIC is organized at the per-patient , per-hospital visit. Each distinct combination of patient and vist is refered to a case here after. The table XXX from the MIMIC data was used to used to calculate the count of each ICD9 code. A code is assigned a count for each distinct entry per case
+
+  The primary data source for this project is the MIMIC III dataset, verison 1.4. MIMIC-III was downloaded from https://physionet.org/content/mimiciii/1.4/ on October 18th 2021. The vast majority of the data in MIMIC is organized into sets of distinct records  per-patient, per-hospital visit. For clarity, we refer to each distinct combination of patient and visit as a case here after. The table 'DIAGNOSES_ICD.csv.gz' from the MIMIC data was used to used to calculate the count of each ICD9 code. We calculated counts of ICD9 both at the case level, and the patient level, where a code is assigned a count for each distinct occurrence per case or patient. Only the case level counts are used for the entire analysis.
 
 ### Estimation of ICD9 term granularity
 
-A mapping between ICD9 and SNOMED-CT<cite> was downloaded from XXX. The SNOMED concept relationships were downloaded from XXX. To re-construct the SNOMED hierarchy as a graph, the "is-a" (ID: XXX) relationships were extracted from the relationship file. The graph was constructed using the NetworkX library in python<cite>. Djikstra's algorithm was used to calculate the distance of each term to the root node.<cite> These distances were then mapped back to ICD9 codes via the downloaded mapping.
+  To estimate granularity, ICD9 codes were first mapped to SNOMED-CT.[@international_health_terminology_standards_development_organisation_snomed_nodate] A mapping between ICD9 and SNOMED-CT was downloaded from https://www.nlm.nih.gov/research/umls/mapping_projects/icd9cm_to_snomedct.html on 11/21/2021. The SNOMED concept relationships were downloaded from https://www.nlm.nih.gov/healthit/snomedct/us_edition.html. To re-construct the SNOMED hierarchy as a graph, the "is-a" (ID: 116680003) relationships were extracted from the relationship file, "sct2_Relationship_Full_US1000124_20210901.txt". This set of "is-a" relationships was used to construct a directed acyclic graph using the NetworkX library in python. [@hagberg_exploring_2008] Dijkstra's shortest path algorithm was used to calculate the distance of each term to the root node. [@dijkstra_note_1959] These distances were then mapped back to ICD9 codes via the downloaded ICD9 SNOMED mapping. For ICD9 terms that mapped to multiple SNOMED terms, the associated distances were averaged together, such that each ICD9 code had a single value for depth
 
-### Standardizing DRG code in MIMC III
+### Standardizing DRG codes in MIMC III
 
-The DRG codes available in MIMIC table XXX contain two versions of DRG code: HCFA and MS. A pdf table mapping HCFA to DRG codes was obtained from XXX. The text extraction tool tabula was used to extract relevant mapping between  HCFA and MC drg codes. HCFA codes that did not map to MS codes were dropped
+  The DRG codes available in the MIMIC table "DRGCODES.csv.gz" contain two versions of DRG codes: HCFA and MS. A pdf table mapping HCFA DRG codes to MS DRG codes was obtained from https://www.kmap-state-ks.us/documents/content/provider/ms-drg%20crosswalk.pdf on 12/03/2021. The text extraction tool tabula (https://github.com/tabulapdf/tabula) was used to extract relevant mapping between HCFA and MC DRG codes.  HCFA codes that did not map to MS codes were dropped from further consideration.
 
 ### Calculation of ICD9 code cost
-Medicare data for 2015-19 was downloaded from XXX on XXX. The submitted costs column was averaged across all centers years to obtain an overall average cost per DRG code. Cost was assigned to ICD9 codes at the case level, and decomposed as a weighted average as follows: 
-For a case with a set of codes  with a set of priorities p and DRG cost $d$ then the cost of code $i$ $c_i = \frac{d}{(\sum{\frac{1}{p}}) * p_i } $
+
+  Medicare data between the years of 2015-2019 was downloaded from https://data.cms.gov/provider-summary-by-type-of-service/medicare-inpatient-hospitals/medicare-inpatient-hospitals-by-provider-and-service/data/ on 11/15/2021, and each separate file for year was merged to get a single file. The submitted costs column was averaged across all centers and years to obtain an overall average cost per DRG code. Cost was assigned to ICD9 codes at the case level, and decomposed as a weighted average as follows:  For a case with a set of codes *C* with a set of priorities *P* and DRG cost *d* then the cost of a single code in *C* is $$C_i = \frac{d}{(\sum_{j=0}^{P}{\frac{1}{P_j}}) * P_i } $$ These case level codes were then averaged across all cases to obtain a single cost estimate per ICD9 code. The average amount re-imbursed was similarly processed and mapped from the DRG level to the distinct ICD9 level.
 
 ### Extraction of ICD9 terms from freetext notes. 
 
 #### Parsing freetext notes
 
-The `NOTEEVENTS.csv` file contains multiple types() freetext notes organized at the case level. Diagnoses at time of discharge were extracted as follows:
+  The "NOTEEVENTS.csv.gz" file contains multiple types of freetext notes organized at the case level. Diagnoses at time of discharge were extracted as follows:
+  
 1. First, notes were filtered to keep only discharge reports
-2. Within the freetext discharge report, the following headers were searched for: {"","","",""}. 
-3. Once a header was found, all ensuing line of text were extracted until a blank line was reached. 
+2. Within the freetext discharge report, the following headers were searched for: {"Discharge Diagnosis", "DISCHARGE DIAGNOSIS", "FINAL DIAGNOSES", "Final Diagnoses"}. 
+3. Once a header was found, all ensuing lines of text were extracted until a blank line was reached. 
 4. The extracted text was then split by newline, with each distinct line considered a separate diagnosis at time of discharge.
 
 #### Extraction of UMLS CUIs from text and Mapping to ICD9.
-Each distinct diagnosis was run through MetaMapLite using default settings and using the 2021AB XXX<index>. Each CUI was converted to ICD9 using a mapping constructed as follows.
-First, CUIs were directly mapped to ICD9 via the UMLS Metathesaurus. CUIs that did not map to ICD9 in this step, were then mapped to SNOMED-CT terms, which were then mapped to ICD9 via the mapping previously described. CUIs that were not mapped at this stage were then mapped to ICD10. A mapping from ICD10 to ICD9 was obtained from <XXX> to map these ICD10 codes to ICD9. At this point, any CUIs that were not mapped were dropped from further analysis. ICD9 codes extracted from notes via this method are referred to as freetext ICD9 codes hereafter. 
-The set of ICD9 codes was then filtered to remove codes that were already present in the set of billed ICD9 codes, at the case level. Freetext ICD9 codes were further filtered to remove codes that were of type NOC/NEC<rephrase>. NOC/NEC codes were identified by searching for the following pattern in the title of the code:{"","",...}. This filtered set of codes was used for further analysis. 
 
+  Each distinct diagnosis was run through MetaMapLite to extract Unified Medical Language System (UMLS) concept unique identifiers (CUIs), using default settings and using the 2020 USAbase index. [@demner-fushman_metamap_2017] Each CUI was converted to ICD9 using a mapping constructed as follows:
+   CUIs were directly mapped to ICD9 via the UMLS Metathesaurus. CUIs that did not map to ICD9 in this step, were then mapped to SNOMED-CT terms, which were then mapped to ICD9 via the mapping previously described. CUIs that were not mapped at this stage were then mapped to ICD10. A mapping from ICD10 to ICD9 was obtained from https://data.nber.org/gem/icd10cmtoicd9gem.csv to map these ICD10 codes to ICD9. At this point, any CUIs that were not mapped were dropped from further analysis. ICD9 codes extracted from notes via this method are referred to as freetext ICD9 codes hereafter. 
+
+  The set of freetext ICD9 codes was then filtered to remove codes that were already present in the set of billed ICD9 codes, at the case level. Freetext ICD9 codes were further filtered to remove codes that were of type "not otherise specified" and "not elsewhere classified" (NOS/NEC). NOC/NEC codes were identified by searching for the following pattern in the title of ICD9 codes:{"NEC","NOS","Oth", "not otherwise specified","not elsewhere classified" }. This filtered set of codes was used for further analysis. 
 
 ## Code
 
-The python, rust, and R programming languages were used for different parts of this project. Python was used for the SNOMED graph construction, rust for parsing free-notes and running MetaMap, and R for data analysis and visualization. All code for this project is available at XXX. The R and rust are presented as an installable R package. 
+  The python, rust, and R programming languages were used for different parts of this project. [@van_rossum_python_2009], [@matsakis_rust_2014], [@r_core_team_r_2020]  Python was used for the SNOMED graph construction and depth calculation, rust for parsing freetext notes and running MetaMapLite, and R for data wrangling, statistical analysis, and visualization. All code for this project is available at https://github.com/vinay-swamy/Symbolic-Methods-Project. The R and rust code are presented as an installable R package. 
 
 ## Results 
 
 ### ICD9 codes are generally unique to patient across multiple visits
 
-The first major task in this project was to decide how to define a count of a code. Calculation of the counts at the case was the most straight forward method because almost the all the data in MIMIC III is organized at the case level. However, this may lead to an individual having the same code assigned across multiple visits, potentially inflating code counts. In order to assess this, we additionally counted codes at the patient level. We found that although a single patient often visits the hospital XXX times on average, the overwhelming majority of codes were used only once per patient across all visits. 
-<Fig 1 A VP of patient visits, B VP of counts per patient >
+  Before examining sources of bias in ICD9 code usage, the first major task in this project was to decide how to define a count of a code. Calculation of the counts at the case level was the most straightforward method because almost the all the data in MIMIC III is organized at the case level. However, this can lead to an individual having the same code assigned across multiple visits, potentially inflating code counts. In order to assess this, we additionally counted codes at the patient level. We found that although a single patient often visits the hospital `r toString(N_avg_visits_pp)` times on average, `r toString(N_frac_total_used_once_pp)` percent of codes were used only once per patient across all visits. Because of this, we decided to proceed using counts at the case level. Counting usage of ICD9 codes showed that `r toString(N_codes_once)` distinct ICD9 codes,  `r toString(N_pt_codes_once)` percent all ICD9 codes, are  used at least once across the entire MIMIC dataset.(Fig1)
 
-### Majority of codes are used infrequently or not at all in MIMIC III data.
 
-Counting usage of ICD9 usage showed that the majority of ICD9 codes are not used at all across the entire MIMIC dataset. Of those that are used, XXX are used less than 5 times across the dataset.
+```{r}
+icd_code_counts_annotated %>% 
+  mutate(k='ICD9') %>% 
+ggplot(aes(x=k, y=count))+
+  geom_violin()+
+  xlab('')+
+  ylim(c(0,25))+
+  theme_classic() +
+  theme(text = element_text(size = 15)) 
 
-### Granularity estimated via depth in the SNOMED hierarchy does not efectively separate codes.
+```
 
-Previous work on the usage of ICD9 codes has shown that ICD9 codes often lack the granularity to properly describe different diseases. <cite>. Because of this, we were curious whether there were systematic differences between terms of different granularity. Determining the granularity of terms generally requires manual assessment by an expert. We instead wanted a computational method for assigning granularity. Our solution was to first map ICD9 codes to SNOMED, and then calculate the distance of each SNOMED term to the root node. We reasoned that this would a reasonable method for estimating granularity because hierarchical organization of terms generally stratifies them by granularity.
+::: {custom-style="CustomCaption"}
+Figure 1. Violin plot of counts of ICD 9 codes in MIMIC III. Codes with count > 25 not shown(n=`r toString(N_code_count_over_25)`)
+:::
 
-<Fig 2 Box plots of Used/ Unused, Used by bin >
+### Granularity estimated via depth in the SNOMED hierarchy does not effectively separate codes.
 
-This method failed to show any difference between terms, both between used and unused codes, and different bins of codes. 
+Logically, one would expect some ICD9 terms to not be used in this dataset, because of the source of the data.  MIMIC only contains data from the ICU of Beth Israel Deaconess, and so only codes that are representative of the patient population of ICUs would be observed. However, to test this we sought to identify a terminological bias that might explain whether or not a term is used, focusing on the conceptual granularity of ICD9 codes. Previous work on the usage of ICD9 codes has shown that ICD codes often lack the granularity to properly describe different diseases. [@sivashankaran_have_2020] Because of this, we were curious whether there were systematic differences in granularity between codes, in particular whether there was an association between ICD9 usage and granularity. 
+  
+  Determining the granularity of terms generally requires manual assessment by an expert. We instead wanted a computational method for assigning granularity. Our solution was to first map ICD9 codes to SNOMED, and then calculate the distance of each SNOMED term to the root node. We reasoned that this would an appropriate method for estimating granularity because the hierarchical organization of SNOMED terms generally stratifies terms by granularity.
+
+```{r, fig.width=7, fig.height=7}
+bp_all <- ggplot(icd_counts_annotated_with_depth) +
+  geom_boxplot(aes(x=is_unused, y=avg_depth))  +
+  xlab("")+
+  ylab("average depth")+
+  theme_minimal()
+
+cb <- ggplot(counts_by_bin %>% filter(count_bin != "0")) + 
+  geom_col(aes(x=count_bin, y=n)) + theme_minimal() + xlab('count bin')
+
+
+db <- ggplot(depth_by_bin %>% 
+               mutate(count_bin = factor(count_bin, levels = c("0","1","[2,5)","[5, 25)",">=25")) ) %>% 
+              filter(count_bin != "0")
+             )+
+  geom_boxplot(aes(x = count_bin, y= avg_depth)) + 
+  xlab('count bin')+
+  ylab('average depth')+
+  theme_minimal()
+
+bp_bins <- cb/db
+
+
+snomed_vs_IC9_depth <-  bind_rows(
+ snomed_depth %>% select(depth) %>% mutate(terminology = "SNOMED-CT"), 
+ ICD9_depth %>% select(depth = avg_depth) %>% mutate(terminology = "ICD9CM")
+) %>% 
+  ggplot(aes(x=terminology, y = depth)) + 
+  geom_violin() + 
+  ylab('average depth')+
+  theme_minimal()
+
+p1 <- (snomed_vs_IC9_depth |  bp_all | bp_bins)  
+
+p1 + plot_annotation(tag_levels = 'A')
+
+
+```
+
+::: {custom-style="CustomCaption"}
+Figure 2.  Analysis of ICD9 granularity via SNOMED hierarchy. A) Comparison of depth distribution for SNOMED-CT and ICD9. B) Depth of used and unused codes. C, D) ICD9 code bin sizes and depth distribution by bin.
+:::
+
+  The majority of ICD9 codes were able to be mapped to at least one SNOMED term, with `r toString(N_1t1_icd_snomed)` mapping directly to one SNOMED term, `r toString(N_1tm_icd_snomed)` mapping to multiple SNOMED terms, and `r toString(N_missing_icd_snoemd)` without a mapping to SNOMED. Using this method we failed to show any difference between the depth of used and unused codes (Fig 1B). <TS> We then assessed the roles of granularity within only used codes. We first grouped data based on code bins (Fig 1C), choosing bin ranges that approximately split the data evenly. Similar to the first experiment, we failed to see any differences in depth between the different count bins. The range of values of depth for ICD9 terms was quite narrow, with the majority of terms having a depth between 4-6 and so failed to adequately separate the data.(Fig1A)
 
 ## Weak positive correlation between ICD9 code usage and code cost
-A previous study reported financial bias in electronic health records<https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5997930/>. We were curious to see whether any such bias was quantifiable from the count data we had.
+
+  The second source of bias we wanted to investigate was financial-based bias. By financial bias, we mean any instances of where the associated cost of an ICD9 code causes it to be used more or less. The existence of financial biases seemed the most likely out of the three earlier proposed directions because at a core level many hospitals and medical centers are businesses attempting to run in a cost efficient manner. A previous study did report financial bias in electronic health records and so we were curious to see whether any such bias was quantifiable from the count data we had.[@verheij_possible_2018] ICD9 codes are not typically assigned a direct dollar amount during the billing process, but are instead assigned to a Diagnosis Related Group(DRG) code, which does have an associated cost. The mapping to ICD9 and DRG is available as part of the MIMIC dataset. However the cost-per-DRG is not available in MIMIC, and Beth Israel Deaconess medical center does not make this information public. 
+  
+  Instead, we used publicly available Medicare billing data, which lists the average cost associated with a given DRG code across multiple years and centers. We averaged this data to obtain a single average cost for each available DRG code, obtaining an average cost for `r toString(N_medicare_DRG)` codes. 
+  
+  Next, we had to standardize the DRG codes available in MIMIC. Because MIMIC data orginates between 2001-2012, two types of DRG codes are used in the dataset:  HCFA-DRG, and MS-DRG. HCFA-DRG codes were retired in 2008 and was replaced by MS-DRG. This is a critical step, as both systems use the same 3 digit structure, but with completely different meanings. To remedy this, we used a mapping between HCFA and MS DRG codes from the Kansas Medical Assistance Program. (Methods) Initially, `r toString(N_d_HCFA)` distinct HCFA codes were in the raw data. `r toString(N_hcfa_mapped)` of these mapped to at least one MS-DRG code. After converting HCFA-DRG codes to MS-DRG codes, the resultign set of codes was mapped to the cost-per-DRG estimated from Medicare data. We were able to assign cost to `r toString(N_DRG_mapped_cost)` distinct MIMIC DRG codes across `r toString(N_case_drg_cost)` cases. Finally, we decomposed these case-level costs for DRG codes into a single average cost per ICD9 code(methods). 
+
+  There is likely biases specific to medicare billing that we have not accounted for. Hypothetically, centers could be submitting higher costs to medicare than they may be to private insurances. We use the average cost submitted for estimating ICD9 cost, but medicare also reports the average amount of money reimbursed; Using this data we calculated the fraction of each ICD9 code in the Medicare dataset that was reimbursed (Fig 3). We found that submitted charges are fairly uniformly re-reimbursed, with an average reimbursement rate of `r toString(N_average_medicare_RI)`. (Fig 3), and because of this continued the project using this medicare-derived cost-per-DRG.
+
+```{r}
+ggplot(estim_dollar_per_ICD9_medicare %>% mutate(x='') %>% mutate(frac_ri = avg_estim_dollar_rec / avg_estim_dollar_sub)) + 
+  geom_boxplot(aes(x=x, y=frac_ri), width=.5) + 
+  ylab("Fraction Reimbursed") + 
+  xlab("ICD9 Code") +   
+  theme_minimal()
+```
+
+::: {custom-style="CustomCaption"}
+Figure 3 Box plot of fraction of submitted cost per DRG that is re-imbursed
+:::
+  
+  In total, we were able to obtain a cost for `r toString(N_icd_w_cost)` ICD9 codes; the average cost per ICD code is \$`r toString(N_mean_cost)`. (Fig 4A) Because we rely on the ICD9 to DRG mapping provided by MIMIC, we were unable to assign a cost to any of the un-used ICD9 codes we previously examined. When directly comparing ICD9 counts to associated cost, we found there was a weak positive correlation(Spearman's $\rho$ = `r toString(spcor)`) (Fig 4B). To visualize this more clearly, we again binned ICD9 codes by count using the same bin ranges as in our terminological analysis, and then tested to see if there was a difference in cost based on count bin. We found that there was a significant difference in cost between the bins(one-way anova p value = `r toString(N_aov_pval)`), suggesting that ICD9 codes that are used more frequently have a higher associated cost. 
+  
+```{r, fig.width=6, fig.height=6}
+mpdf = tibble(y=estim_dollar_per_ICD9_medicare %>% pull(avg_estim_dollar_sub ) %>% mean, 
+              x='')
+N_mean_cost = round(mpdf$y, 2)
+cost_per_code_bp <- ggplot(estim_dollar_per_ICD9_medicare %>% mutate(x='') ) + 
+  geom_boxplot(aes(x=x, y=avg_estim_dollar_sub), width=.5, outlier.shape = NA) + 
+  geom_point(data = mpdf, aes(x=x, y=y), color = 'red')+
+  ylab("Average Submitted Cost") +
+  ylim(c(0,25000)) +
+  xlab("ICD9 Code") +   
+  theme_minimal()
+
+count_vs_cost_sp <- ggplot(cost_with_counts, aes(x=count, y = avg_estim_dollar_sub)) + 
+  xlim(c(0, 1000))+
+  #ylim(c(0,25000)) +
+  geom_point(alpha = .2)  + 
+  geom_label(data = tibble(count =500 , avg_estim_dollar_sub = 150000, text = paste("Spearman correlation:", spcor)),
+       aes(x=count, y = avg_estim_dollar_sub, label = text)
+       )+
+  xlab("ICD9 Code Count") + 
+  ylab("Average Submitted Cost")+
+  theme_minimal() + 
+  theme_minimal()
+
+cost_by_bin_bp <-  ggplot(cost_with_counts_binned) + 
+  geom_boxplot(aes(x=count_bin, y=avg_estim_dollar_sub), outlier.shape = NA) + 
+  geom_point(data = avg_cost_per_bin, aes(x=count_bin, y=avg_cost ,color =k ))+
+  geom_label(data = aov_lab, aes(x=x, y=y, label =text))+
+  guides(color = guide_legend(title = ""))+
+  theme_minimal()+
+  ylim(c(0,25000)) + 
+  xlab("Count Bin") + 
+  ylab("Average Submitted Cost") + 
+  theme(legend.position = 'bottom')
+
+des <- 
+'
+ABB
+CCC'
+cost_per_code_bp + 
+  count_vs_cost_sp + 
+  cost_by_bin_bp + 
+  plot_layout(design = des) + 
+  plot_annotation(tag_levels = 'A')
 
 
-## Conclusion
+```
+
+::: {custom-style="CustomCaption"}
+Figure 4.  Increase in ICD9 code usage associated with a higher cost. A) Boxplot of average estimated cost per ICD9 code B), ICD code count vs cost scatter plot C) ICD code cost by count bin. For plots A and C, outliers not shown. ( n=`r toString(N_cost_outliers)`) For calculation of the anova p-value, the full dataset including outliers, was used.
+:::
+  
+  There are however numerous codes with low count, but a high cost; these are likely codes for diseases or conditions that have a low prevalence in the population, but require substantial resources to treat. Manually inspecting high cost codes with only one count partially confirms this; the highest costing codes with count one are codes within the "Injury and Poisoning" family of ICD9 codes, such as "Internal injury to unspecified or ill-defined organs with open wound into cavity", or "Injury to ascending [right] colon, with open wound into cavity".
+
+
+### ICD9 codes can be extracted from freetext discharge diagnosis reports  are slighlty less expensive than billed ICD9 codes 
+
+  Encoding errors in EHRs are when recorded data such as ICD9 codes do not match the medical narrative in freetext. Several other studies have shown that systematic encoding biases exist within EHRs; Fette et al. showed that ICD9 codes extracted from freetext via NLP routinely differ from the set of codes billed. [@fette_estimating_2018] We sought to first confirm that this holds true for MIMIC, and then examine whether the ICD9 codes extracted from freetext differed in cost from billed ICD9 codes. 
+  
+  MIMIC provides freetext discharge notes for almost every patient, organized at the case level; within these notes there is a subsection which enumerates the different diagnoses a patient was assigned by the discharging physician. We extracted these freetext diagnoses from notes via a custom parsing script and were able to extract a total of `r toString(N_noteline_extracted)` freetext diagnoses across `r toString(N_cases_with_noteline)` cases. Next, we extracted UMLS CUI's with the NLP tool MetaMapLite and then mapped these CUI's to ICD9 (methods). After mapping CUIs to ICD9,  we identified `r toString(N_icd_mapped_from_ft)` ICD9 codes across `r toString(N_cases_icd_mapped_from_ft)` cases. 
+  
+```{r, fig.width = 8, fig.height=4}
+pc <- ggplot(ft_mapping_piechart_data, aes(x="",y=n, fill = code_type)) + 
+  geom_bar(stat = "identity") + 
+  coord_polar("y", start=0) + 
+  ggtitle(paste0("n = ", N_icd_mapped_from_ft, " ICD9 Codes" )) +
+  guides(fill = guide_legend(title = "", nrow=2, byrow = T))+
+  theme_void() +
+  theme(legend.position = 'bottom',plot.margin = unit(c(0,1,0,0), "cm")) 
+bp <- ggplot(ft_bp_pdata) + 
+  geom_boxplot(aes(x=CODE_ORIGIN, y =avg_estim_dollar_sub), outlier.shape = NA) +
+  geom_label(data = pv_lab ,aes(x=x, y=y, label= label))+
+  ylim(c(0, 20000)) + 
+  xlab("")+
+  ylab("Average Submitted Cost")+
+  theme_minimal()
+
+
+(pc|bp) + plot_annotation(tag_levels = 'A')
+```
+
+::: {custom-style="CustomCaption"}
+Figure 5. ICD9 codes can be extracted from freetext that cost less than billed codes. A) Pie chart of extracted ICD9 codes by code type B) Boxplot comparing cost of billed and freetext ICD9 codes.
+:::
+
+  Encouragingly, `r toString(N_pt_ft_match_bld)` percent of the codes we extracted matched a code previously recorded in the billed set of codes (Fig5A). This method also extracted many codes of NEC/NOC origin. When manually inspecting these codes against the freetext they were derived from, we found that many of them had been erroneously assigned to NEC/NOC codes. We identified all NEC/NOC codes within ICD9, and then removed these codes from our set of freetext codes, which accounted for `r toString(N_pt_ft_noc)` percent of extracted codes. The remaining fraction of codes are novel codes, or codes that are not in the set of billed codes for their associated case. Of these novel codes we found, only `r toString(N_pt_novel_unused)` percent are from the set of unused codes. This suggests that the set of codes observed in MIMIC is likely close to the theoretical set of all possible ICD9 codes one would expect to see at an ICU, and that the un-used codes we observed are likely unused because there they do not reflect the standard population of the ICU.
+  
+  Working with the set of novel extracted codes, we then examined whether the average cost associated with a free text code was different from the average cost of billed codes. We found that the billed codes slightly, but significantly, (one way Wilcox p value = `r toString(pv_lab$pv)` ), differed in cost to the freetext codes with an average difference of \$`r toString(N_ft_bld_cost_diff)`. 
+
+## Conclusion and discusssion
+
+  In this project, we sought to identify evidence of systematic terminological, financial, and encoding biases affecting the distribution of ICD9 code counts in the MIMIC data set. In the terminological direction, our SNOMED hierarchy based depth method for estimating granularity failed to produce a metric that was able to adequately stratify the data as most ICD9 codes had very similar depth values. While this current method failed, it certainly does not rule out the possibility of terminological biases. However a better method for estimating granularity would likely be required to prove such biases. Additionally, the idea of using the SNOMED hierarchy graph to estimate granularity may still hold promise, as there are other commonly used graph metrics such as number of parent nodes, or number of child nodes that could be used to estimate granularity.
+  
+  In the financial direction, we found that the average cost of ICD codes increased as code usage increased. However, because the cost per ICD9 term was estimated using medicare data, the results must be taken with a grain of salt.  This financial direction is certainly and interesting, and our results support investigating it further; however for true impactful results one would need billed charges directly from the hospital, as well as a detailed workflow tracking the billing process that incorporates the documentation styles of clinicians and coders. Additionally, to prove this further, data from other hospitals would likely be required to see if similar patterns of financial bias are present. 
+  
+  We found evidence of encoding biases, demonstrated by the identification of ICD9 codes from freetext diagnoses not present in the set of billed codes. These freetext codes on average cost less than the billed codes. While our NLP pipeline was moderately accurate, there is much room for improvement. First, we only consider the freetext diagnosis part of the discharge report for extracting codes from. As this is just a list of diagnoses, it misses the rich contextual and medical narrative information present in the rest of the note. Incorporating this information into our NLP pipeline may allow us to more accurately identify ICD9 codes. Second, we use a symbolic NLP method, MetaMapLite, to first extract concepts and then map those concepts to ICD9 codes. This is a well established method, but newer non-symbolic methods can probabilisticly assign a ICD9 code directly from freetext which might prove more applicable for our project.[@hsu_applying_2020]
+  
+  As a whole our study represents a wide, but shallow exploration of biases effecting EHR. Though we did identify some evidence of financial biases in ICD code usage, the general method of trying to estimate biases solely from a single axis of information is almost certainly not enough to capture the nuances of the different biases affecting the EHR. This study does serve as a useful starting point for future directions. The ideal future study on biases will likley need access to the full range of data present in multiple EHRs, and work in tandem with clinicians and hospital administration to pin point specific causes of biases, and ultimately make efforts to change them
 
 
 ## References 
+

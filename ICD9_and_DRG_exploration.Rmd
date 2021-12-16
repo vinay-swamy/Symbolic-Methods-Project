@@ -46,6 +46,13 @@ DRG_codes_raw %>% filter(DRG_TYPE != "APR") %>% select(SUBJECT_ID, HADM_ID) %>% 
 
 ```
 
+```{r}
+drg_tab <-  DRG_codes_raw %>% select(DRG_TYPE, DRG_CODE) %>% distinct() %>% group_by(DRG_TYPE) %>% 
+  summarise(codeset = list(unique(DRG_CODE)))
+N_d_HCFA = drg_tab[2, 2] %>% .[[1]] %>% .[[1]] %>%  length
+N_d_MS = drg_tab[3, 2] %>% .[[1]] %>% .[[1]] %>%  length
+```
+
 
 Map CMS-DRG to MS-DRG
 
@@ -70,6 +77,11 @@ HCFA_to_MS_drg <- bind_rows(
          MS = paste0("MS", MS)) %>% 
   select(-CMS) %>% 
   distinct()
+
+
+sum(paste0("MS", drg_tab$codeset[[3]]) %in% HCFA_to_MS_drg$MS)
+N_hcfa_mapped <- sum(paste0("HC", drg_tab$codeset[[3]]) %in% HCFA_to_MS_drg$HCFA)
+
 ```
 
 Clean up DRG table 
@@ -129,6 +141,8 @@ medicare_avg_cost_per_DRG <- all_medicare_billing_data %>%
   filter(rowSums(is.na(.)) == 0 ) %>% 
   mutate(DRG_CODE = paste0("MS", DRG_Cd)) %>% 
   select(-DRG_Cd)
+
+N_medicare_DRG <-  n_distinct(medicare_avg_cost_per_DRG$DRG_CODE)
 ```
 
 
@@ -159,6 +173,11 @@ estim_dollar_per_ICD9_medicare <- ICD9_mapped_to_medicare_dollar %>% group_by(IC
             avg_estim_dollar_ri = mean(ICD9_dc_avg_ri_delta)
             )
 
+N_DRG_mapped_cost <-  ICD9_mapped_to_medicare_dollar$DRG_CODE %>% n_distinct 
+
+N_case_drg_cost <-  diag_DRG_cleaned %>% filter(DRG_CODE %in% ICD9_mapped_to_medicare_dollar$DRG_CODE) %>% select(SUBJECT_ID, HADM_ID) %>% distinct %>% nrow
+
+N_icd_w_cost <-  estim_dollar_per_ICD9_medicare$ICD9_CODE %>% n_distinct
 
 ```
 
@@ -166,7 +185,7 @@ estim_dollar_per_ICD9_medicare <- ICD9_mapped_to_medicare_dollar %>% group_by(IC
 N_medicare_DRG = all_medicare_billing_data %>% pull(DRG_Cd) %>% n_distinct()
 N_mimic_DRG = DRG_codes_raw %>% pull(DRG_CODE) %>% n_distinct()
 N_commmon_DRG = length(intersect(all_medicare_billing_data$DRG_Cd, DRG_codes_raw$DRG_CODE))
-N_mappa
+
 ```
 
 ```{r, fig.width =4}
@@ -174,7 +193,7 @@ ggplot(estim_dollar_per_ICD9_medicare %>% mutate(x='')) +
   geom_boxplot(aes(x=x, y=avg_estim_dollar_sub), width=.5) + 
   ylim(c(0, 20000)) + 
   ylab("Average Submitted Cost") +
-  xlab("ICD9 Code") +  + 
+  xlab("ICD9 Code") +  
   theme_minimal()
   
 ```
@@ -182,120 +201,34 @@ ggplot(estim_dollar_per_ICD9_medicare %>% mutate(x='')) +
 ```{r}
 ggplot(estim_dollar_per_ICD9_medicare %>% mutate(x='') %>% mutate(frac_ri = avg_estim_dollar_rec / avg_estim_dollar_sub)) + 
   geom_boxplot(aes(x=x, y=frac_ri), width=.5) + 
-
   ylab("Average Submitted Cost") +
   xlab("ICD9 Code") +   
   theme_minimal()
   
 ```
 
-
-
-Method 2: using BID CMS transparency xml
-
-
 ```{r}
-
-library(xml2)
-
-x <- read_xml("042103881_beth-israel-deaconess-medical-center-inc_standardcharges.xml")
-payload <- as_list(x)
-v <-  payload$StandardCharges$Facility[[3]][[1]]
-t_tags <- c("Descr","GrossCharge", "DiscountCashCharge", "MinNegotiatedCharge", "MaxNegotiatedCharge")
-parse_charge_l <- function(charge_l){
-  lapply(charge_l, function(x){
-  if (length(unlist( x[t_tags])) != 5){
-    return(tibble())
-  }
-  res <- x[t_tags] %>% as.data.frame %>% as_tibble 
-
-  colnames(res) <- t_tags
-  res
-  }) %>% bind_rows
-}
-
-cms_xml_parsed <- lapply(payload$StandardCharges$Facility[3:6], parse_charge_l) %>% bind_rows()
-
-splitl <- function(x, n){
-  psl <- str_split(x, " ") %>% unlist
-  tibble(DRG =psl[1], MDC = psl[2], MS = psl[n], Description = paste(psl[(n+1):length(psl)], collapse = " "))
-}
-k <- read_tsv("~/Downloads/MSDRGv39/appendix_A.txt", skip = 11, col_names = "raw", n_max = 17) %>% 
-  pull(raw) %>% 
-  lapply(function(x) splitl(x, 3)) %>% 
-  bind_rows()
-j <- read_tsv("~/Downloads/MSDRGv39/appendix_A.txt", skip = 11+17, col_names = "raw") %>% 
-  pull(raw) %>% 
-  lapply(function(x) splitl(x, 4)) %>% 
-  bind_rows()
-drg_grouper <- bind_rows(k,j)
-
-drg_grouper$descr_list <- drg_grouper$Description %>% tolower() %>% str_remove_all("^ p |^ m ") %>% str_squish() %>%
-  str_replace_all("w/o|w\\./o\\.", "without") %>% 
-  str_replace_all("w/", "with") %>% 
-  str_replace_all("<|>|/", " ") %>% str_replace_all("\\.|-|,","") %>% 
-  str_replace_all("&", " and ") %>% 
-  str_split(" ") %>% 
-  lapply(function(x) x[x!=""])
-cms_xml_parsed$descr_list  <- cms_xml_parsed$Descr %>% tolower %>% 
-  str_replace_all("w/o|w\\./o\\.", "without") %>% 
-  str_replace_all("w/", "with") %>% 
-  str_replace_all("<|>|/", " ") %>% str_replace_all("\\.|-|,","") %>% 
-  str_replace_all("&", " and ") %>%  str_split(" ") %>% 
-  lapply(function(x) x[x!=""])
-m <- lapply(cms_xml_parsed$descr_list, function(x){
-          matches <- sapply(seq_along(drg_grouper$descr_list), function(y){
-            if(all(x %in% drg_grouper$descr_list[[y]])) return (drg_grouper$DRG[y])
-            #else
-            return(-1)
-            
-          } )
-          
-        if(all(matches == -1)){
-          return(-1)
-        } else{
-          return(matches[matches != -1])
-        }
-      }
-    )
-cms_xml_parsed$rc_DRG  = m
-
-cmls_xml_mapped_to_drg <-  cms_xml_parsed %>% filter(sapply(rc_DRG,  function(x) x[1] != -1)) %>% unnest(rc_DRG) %>% select(-descr_list) %>% 
-  mutate(DRG_CODE = paste0("MS", rc_DRG), 
-         GrossCharge = str_remove_all(GrossCharge, ","),
-         GrossCharge = as.numeric(GrossCharge))
-
-cmls_xml_mapped_to_drg %>% pull(DRG_CODE) %>% n_distinct()
-
-cms_avg_cost_per_DRG <- cmls_xml_mapped_to_drg %>% group_by(DRG_CODE) %>% summarise(avg_dollar_sub = mean (GrossCharge))
-
-```
-
-
-```{r}
-ICD9_mapped_to_cms_xml_dollar <-  inner_join(diag_ICD_DRG, cms_avg_cost_per_DRG) %>% 
-  group_by(SUBJECT_ID, HADM_ID, DRG_CODE) %>% 
-  summarise(SEQ_NUM = SEQ_NUM, 
-            ICD9_CODE = ICD9_CODE, 
-            DRG_CODE = DRG_CODE,
-            ICD9_dc_avg_dollar_sub = decompose_code_weights(first(avg_dollar_sub), SEQ_NUM),
-            ) 
-
-estim_dollar_per_ICD9_cms <- ICD9_mapped_to_cms_xml_dollar %>% group_by(ICD9_CODE) %>% 
-  summarise(avg_estim_dollar_sub = mean(ICD9_dc_avg_dollar_sub)
-            )
-
-```
-
-
-```{r}
-save(estim_dollar_per_ICD9_cms, estim_dollar_per_ICD9_medicare, file = "Rdata/ICD9_estimated_dollar_amounts.Rdata")
+save( estim_dollar_per_ICD9_medicare, file = "Rdata/ICD9_estimated_dollar_amounts.Rdata")
 ```
 
 
 ```{r}
 estim_dollar_per_ICD9_medicare %>% arrange(desc(avg_estim_dollar_sub)) %>% tail
 ```
+
+
+```{r}
+all_medicare_billing_data %>% mutate(frac_ri = Avg_Mdcr_Pymt_Amt %>% as.numeric() / Avg_Submtd_Cvrd_Chrg %>% as.numeric(), x='') %>% 
+  filter(frac_ri <= 1) %>% 
+  ggplot() + 
+  geom_boxplot(aes(x=x, y=frac_ri)) + 
+  xlab('Medicare DRG Code') + 
+  ylab("Fraction Reimbursed")
+
+N_average_medicare_RI = all_medicare_billing_data %>% mutate(frac_ri = Avg_Mdcr_Pymt_Amt %>% as.numeric() / Avg_Submtd_Cvrd_Chrg %>% as.numeric(), x='') %>% 
+  filter(frac_ri <= 1) %>% pull(frac_ri) %>% mean(na.rm = T) %>% round(2)
+```
+
 
 ```{r}
 cost_with_counts <-  inner_join(icd_code_counts_annotated,  estim_dollar_per_ICD9_medicare) %>% 
@@ -315,7 +248,9 @@ ggplot(cost_with_counts, aes(x=count, y = avg_estim_dollar_sub)) +
   ylab("Average Submitted Cost")+
   theme_minimal() + 
   theme_minimal()
-
+mpdf = tibble(y=estim_dollar_per_ICD9_medicare %>% pull(avg_estim_dollar_sub ) %>% mean, 
+              x='')
+N_mean_cost = round(mpdf$y, 2)
 ```
 
 ```{r}
@@ -329,7 +264,8 @@ cost_with_counts_binned <-  cost_with_counts %>%   mutate(count_bin = case_when(
 avg_cost_per_bin <- cost_with_counts_binned %>% group_by(count_bin) %>% 
   summarise(avg_cost = mean(avg_estim_dollar_sub)) %>% 
   mutate(k="Average Cost")
-aov_lab <- tibble(x=1.5, y=22000, text = summary(k)[[1]][["Pr(>F)"]][1] %>% round(5) %>% {paste0("Anova p value = ",.)} )
+N_aov_pval=summary(aov(avg_estim_dollar_sub ~ count_bin, data = cost_with_counts_binned ) )[[1]][["Pr(>F)"]][1] %>% round(5)
+aov_lab <- tibble(x=1.5, y=22000, text = N_aov_pval %>% {paste0("Anova p value = ",.)} )
 ggplot(cost_with_counts_binned) + 
   geom_boxplot(aes(x=count_bin, y=avg_estim_dollar_sub), outlier.shape = NA) + 
   geom_point(data = avg_cost_per_bin, aes(x=count_bin, y=avg_cost ,color =k ))+
@@ -340,191 +276,26 @@ ggplot(cost_with_counts_binned) +
   ylim(c(0,25000)) + 
   xlab("Count Bin") + 
   ylab("Average Submitted Cost")
+
+
+N_cost_outliers <-  sum(estim_dollar_per_ICD9_medicare$avg_estim_dollar_sub > 25000)
 ```
+```{r}
+cost_with_counts_binned %>% filter(count_bin == "1") %>% View
+```
+
+
 
 ```{r}
-library(ggpubr)
+save(cost_with_counts_binned,aov_lab, avg_cost_per_bin, cost_with_counts, spcor, estim_dollar_per_ICD9_medicare, all_medicare_billing_data, file = 'Rdata/ICD9_and_DRG_exploration_plotdata.Rdata'  )
+save(list = ls()[grepl('N_', ls())], file = 'Rdata/ICD9_and_DRG_exploration_countdata.Rdata' )
 
-ggboxplot(cost_with_counts_binned, x = "count_bin", y='avg_estim_dollar_sub') + 
- 
 ```
 
 
-
-```{r}
-cost_with_counts %>% select(count, frac_rec) %>% cor(method = 'spearman')
-ggplot(cost_with_counts, aes(x=count, y = frac_rec)) + 
-  geom_point(alpha = .2) 
-```
 
 
 
 Below here not relevant 
-
-----
-
-```{r}
-d <- tibble(x=c(seq(.01, .1, .001), seq(.1, 1, .01) ) ) %>% 
-    mutate(y=1/x ,
-           j=1/y)
-m <- lm(y~x, data=d)
-ggplot(d, aes(x=x, y=j))+
-  geom_point() + 
-  geom_smooth(method = 'lm')
-```
-
-
-map ICD 10 to DRG
-
-```{r}
-ICD102DRG_raw <- data.table::fread(cmd = 'tail -n+10 ~/Downloads/MSDRGv39-2/appendix_B.txt | grep -Ev "^    " |tr -s " "| cut -d" " -f 2,3,4 ',
-                               sep = " ", col.names = c("ICD10_CODE", "DX", "DRG_raw")) %>% as.data.frame %>% as_tibble %>% 
-  mutate(DRG_l = str_split(DRG_raw, "-") %>% sapply(function(x) first(x) %>% as.numeric() ), 
-         DRG_r = str_split(DRG_raw, "-") %>% sapply(function(x) last(x) %>% as.numeric()) )# %>% 
-
-
-ICD102DRG_msg <- ICD102DRG_raw %>% filter(is.na(DRG_l)|is.na(DRG_r)) %>% 
-  mutate(DRG_list = str_split(DRG_raw, ",")) %>% 
-  unnest(DRG_list) %>% 
-  mutate(DRG_list = as.numeric(DRG_list))
-ICD102DRG_range <- ICD102DRG_raw %>% filter(!(is.na(DRG_l)|is.na(DRG_r))) %>% 
-  mutate(DRG_list = sapply(1:nrow(.), function(i) seq(.$DRG_l[i], .$DRG_r[i])    )) %>% 
-  unnest(DRG_list)
-ICD102DRG <-  bind_rows(ICD102DRG_msg, ICD102DRG_range) %>% select(ICD10_CODE, DRG = DRG_list)
-
-
-```
-
-
-```{r}
-ICD102DRG %>% group_by(DRG) %>% summarise(icd_list = list(unique(ICD10_CODE)))
-```
-
-
-
-map ICD9 to ICD10
-
-```{r}
-ICD9210 <- read_csv("https://data.nber.org/gem/icd10cmtoicd9gem.csv") %>% 
-  select(ICD9_CODE = icd9cm, ICD10_CODE = icd10cm)
-
-
-```
-
-
-ICD9 to DRG (from MIMIC data)
-
-```{r}
-icd_with_drg_long %>% filter(DRG_CODE %in% single_DRGs, ICD9_CODE%in% icd_code_counts_annotated$ICD9_CODE) %>% select(DRG_CODE, ICD9_CODE) %>% distinct %>% filter(!ICD9_CODE %in% ICD9210$ICD9_CODE) %>% pull(ICD9_CODE) %>% n_distinct()
-```
-
-
-ICD9 to DRG (from groupers)
-
-
-```{r}
-ICD9_2_DRG_grouper <-  icd_code_counts_annotated %>% select(ICD9_CODE) %>% inner_join(ICD9210) %>% inner_join(ICD102DRG) %>% select(ICD9_CODE, DRG_CODE=DRG) %>% distinct 
-n_distinct(ICD9_2_DRG_grouper$ICD9_CODE)
-sum(is.na(ICD9_2_DRG_grouper$DRG_CODE))
-n_distinct(ICD9_2_DRG_grouper$DRG_CODE)
-```
-
-```{r}
-all_medicare_billing_data <- list.files(pattern = "Medicare_Inpatient_Hospitals_by_Provider_and_Service_Data") %>% 
-  lapply(function(x) read_csv(x, col_types = rep("c", 15) %>% paste(collapse =""))) %>% bind_rows
-sum(unique(all_medicare_billing_data$DRG_Cd) %in% unique(DRG_codes_raw$DRG_CODE))
-
-
-
-
-unique(DRG_codes_raw$DRG_CODE) %>% length
-avg_cost_per_DRG <- all_medicare_billing_data %>% 
-  mutate(Avg_Submtd_Cvrd_Chrg = as.numeric(Avg_Submtd_Cvrd_Chrg)) %>% 
-  group_by(DRG_Cd) %>% summarise(avg_submitted_cost = mean(Avg_Submtd_Cvrd_Chrg, na.rm =T))
-```
-
-
-- need to resolve ICD9> 10 mapping a little better,
-- consider using diagnosis ICD sets to further 
-- revised dollar assignment: penalize codes that 
-
-
-```{r}
-
-
-ICD9_mapped_to_dollar_with_grouper <- ICD9_2_DRG_grouper %>% 
-    distinct %>% 
-  group_by(DRG_CODE) %>% 
-  summarise(icd_list  = list(unique(ICD9_CODE))) %>%
-  mutate(DRG_CODE = as.character(DRG_CODE)) %>% 
-  inner_join(avg_cost_per_DRG %>% rename(DRG_CODE = DRG_Cd)) %>% 
-  group_by(icd_list) %>%
-  summarise(avg_cost_per_DRG_SET = mean(avg_submitted_cost),
-            drgSet =paste0("DS-", paste(DRG_CODE, collapse = "_"))) %>%
-  mutate(icd_set_size = sapply(icd_list, length),
-         fractional_cost = avg_cost_per_DRG_SET / icd_set_size) %>% 
-  unnest(icd_list)
-
-
-```
-
-
-```{r}
-
-counts_with_cost <- ICD9_mapped_to_dollar_with_grouper %>% 
-  select(ICD9_CODE = icd_list, estim_cost = avg_cost_per_DRG_SET) %>%  
-  inner_join(icd_code_counts_annotated) %>% 
-  filter(!is.na(estim_cost)) 
-m <- lm(count ~ estim_cost,counts_with_cost )
-summary(m)$r.squared
-
-#%>% 
-ggplot(counts_with_cost, aes(x = count, y=estim_cost)) + 
-  geom_point() +
-  xlim(c(1, 100)) +
-  geom_smooth(method = 'lm', )
-
-
-```
-
-```{r}
-#used_i9_codes <- icd_code_counts_annotated %>% filter(count > 0) %>% pull(ICD9_CODE)
-load("Rdata/ICD9_diag_codes_by_patient_visit.Rdata")
-mimic_icd_sets <- diag_with_admits %>% 
-  mutate(UID = paste(SUBJECT_ID,HADM_ID, sep = "-")) %>% 
-  group_by(UID) %>% 
-  summarise(icd_list  = list(unique(ICD9_CODE)))
-
-
-DRG_icd_sets <-  ICD9_2_DRG_grouper %>% 
-    distinct %>% 
-  #filter(ICD9_CODE %in% used_i9_codes) %>% 
-  group_by(DRG_CODE) %>% 
-  summarise(icd_list  = list(unique(ICD9_CODE))) 
-
-jac <- function(l1, l2){
-  i = intersect(l1, l2) %>% length
-  u = union(l1, l2) %>% length
-  return (i/u)
-}
-
-
-mimic_DRG_set_comp <-  lapply(mimic_icd_sets$icd_list,  function( mset) 
-               sapply(DRG_icd_sets$icd_list,  function(dset) jac(mset, dset) ) 
-       )
-
-```
-
-```{r}
-mimic_DRG_set_comp[[1]]
-```
-
-
-
-
-
-
-
-
 
 

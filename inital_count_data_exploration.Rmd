@@ -71,26 +71,24 @@ diag_with_admits <-  admissions %>% left_join(diag_icd) %>% mutate(ADMITTIME = a
                                                                    DISCHTIME = as_datetime(DISCHTIME)
                                                                    )
 ```
-
-
 rationale about how to use counts 
 
 ```{r}
 
-diag_with_admits %>% group_by(SUBJECT_ID, ICD9_CODE) %>% count %>% mutate(x="C") %>% 
-  ggplot(aes(x=x, y=n)) + 
-  geom_violin() + 
-  ylim(c(0,10))
+count_strat_validation_data <- bind_rows(
+  diag_with_admits %>% group_by(SUBJECT_ID) %>% count %>% mutate(x="# of visits per patient"),
+  diag_with_admits %>% group_by(SUBJECT_ID, ICD9_CODE) %>% count %>% mutate(x="# of times ICD9 code billed per patient") 
+)
+
+N_frac_total_used_once_pp <-  count_strat_validation_data %>% filter(x=="# of times ICD9 code billed per patient") %>% pull(n) %>% 
+  {sum(.[. == 1])/sum(.)} %>% {.*100} %>% round(2)
+
+N_avg_visits_pp <- count_strat_validation_data %>% filter(x!="# of times ICD9 code billed per patient") %>% pull(n) %>% mean  %>%  round(2)
+N_cases =diag_with_admits %>% select(SUBJECT_ID, HADM_ID) %>% distinct %>% nrow
 
 ```
 
-```{r}
 
-```
-
-
-
-Data is mostly complete; only 47 patients have no ICD code 
 
 We'll define a count as each distinct entry of a code; in the future, we might consider distinct per patient 
 
@@ -151,6 +149,35 @@ icd_code_counts_annotated <- icd_reference_annotated %>% left_join(icd_code_coun
 
 save(icd_code_counts_annotated, file = 'Rdata/icd_code_reference_and_counts.Rdata')
 
+N_pt_codes_once = icd_code_counts_annotated %>% filter(count != 0) %>% nrow %>% {./nrow(icd_code_counts_annotated)} %>% {.*100} %>% round(2)
+N_codes_once = icd_code_counts_annotated %>% filter(count != 0) %>% nrow
+
+
+N_icd_code_less_5c <- icd_code_counts_annotated %>% filter(count < 5) %>% nrow %>% {./nrow(icd_code_counts_annotated)} %>% {.*100} %>% round(2)
+```
+
+```{r}
+library(ggforce)
+icd_code_counts_annotated %>% 
+  mutate(k='ICD9') %>% 
+ggplot(aes(x=count))+ 
+  geom_density() + 
+  facet_zoom(x = count < 25)
+```
+
+
+
+```{r}
+icd_code_counts_annotated %>% 
+  mutate(k='ICD9') %>% 
+ggplot(aes(x=k, y=count))+
+  geom_violin(width = .5)+
+  xlab('')+
+  ylim(c(0,25))+
+  theme_classic() +
+  theme(text = element_text(size = 15)) 
+
+N_code_count_over_25 = sum(icd_code_counts_annotated$count > 25)
 ```
 
 
@@ -172,7 +199,8 @@ save(icd_code_counts_annotated, file = "Rdata/ICD9_mimic3_counts.Rdata")
 N_1t1_icd_snomed = icd_reference_with_snomed %>% filter(type == "1-to-1") %>% pull(ICD9_CODE) %>% n_distinct
 N_missing_icd_snoemd = icd_reference_with_snomed %>% filter(is.na(SNOMED_CID)) %>% select(ICD9_CODE, SNOMED_CID) %>% distinct %>% nrow
 N_1tm_icd_snomed <- nrow(icd_reference) - N_1t1_icd_snomed - N_missing_icd_snoemd
-
+N_patients_mimic <- diag_with_admits %>% select(SUBJECT_ID) %>% n_distinct
+N_icd_codes_mimic <- nrow(diag_with_admits)
 ```
 
 
@@ -183,8 +211,8 @@ grep 116680003 SnomedCT_USEditionRF2_PRODUCTION_20210901T120000Z/Full/Terminolog
  wc -l snomed_is-a_relationships.txt
 ```
 
-```{r}
-system(" python3 networkx_SNOMED_depth.py")
+```{r, eval=FALSE}
+#system(" python3 networkx_SNOMED_depth.py")
 ```
 
 ```{r}
@@ -195,18 +223,78 @@ ICD9_depth <- filter(icd_reference_with_snomed, !is.na(SNOMED_CID)) %>%
   inner_join(snomed_depth) %>% 
   group_by(ICD9_CODE) %>% 
   summarise(avg_depth = mean(depth))
-save(ICD9_depth, file = "Rdata/ICD9_depth.Rdata")
+
 ```
 
 ```{r}
-bind_rows(
+icd_counts_annotated_with_depth <- icd_code_counts_annotated %>% 
+  mutate(is_unused = ifelse(count == 0, 'Unused', 'Used')) %>% 
+  inner_join(ICD9_depth)
+
+
+N_used_icd9= icd_counts_annotated_with_depth %>% filter(is_unused == "Used") %>% nrow()
+```
+
+
+```{r}
+snomed_vs_IC9_depth <-  bind_rows(
  snomed_depth %>% select(depth) %>% mutate(terminology = "SNOMED-CT"), 
  ICD9_depth %>% select(depth = avg_depth) %>% mutate(terminology = "ICD9CM")
 ) %>% 
   ggplot(aes(x=terminology, y = depth)) + 
   geom_violin() + 
   theme_minimal()
+
+icd_counts_annotated_with_depth <- icd_counts_annotated_with_depth %>% 
+  filter(!is.na(avg_depth))
+plabdf <- wilcox.test(icd_counts_annotated_with_depth %>% filter(count == 0) %>% pull(avg_depth),
+                      icd_counts_annotated_with_depth %>% filter(count != 0) %>% pull(avg_depth)) %>% .[['p.value']]
+
+ggplot(icd_counts_annotated_with_depth) +
+  geom_boxplot(aes(x=is_unused, y=avg_depth))  +
+  xlab("")+
+  ylab("average depth")+
+  theme_minimal()
 ```
+
+
+```{r}
+numbers <- ls() %>% .[grepl("N_", .)]
+save(list = numbers, file = 'Rdata/initial_count_data_exploration.Rdata')
+```
+
+```{r}
+icd_counts_annotated_with_depth %>% filter(count == 0) %>% pull(avg_depth) %>% mean
+                      icd_counts_annotated_with_depth %>% filter(count != 0) %>% pull(avg_depth) %>% mean
+```
+```{r}
+depth_by_bin <-  icd_counts_annotated_with_depth %>% 
+  filter(!is.na(avg_depth)) %>% 
+  mutate(count_bin = case_when(
+    count ==  0 ~ "0",
+    count == 1 ~ "1", 
+    count >=2 & count <5 ~ "[2,5)",
+    count >=5 & count <25 ~ "[5, 25)",
+    count >= 25 ~ ">=25"
+  ) ) 
+
+counts_by_bin = depth_by_bin %>% group_by(count_bin) %>% count %>% 
+  mutate(count_bin = factor(count_bin, levels = c("0","1","[2,5)","[5, 25)",">=25")))
+
+save(counts_by_bin, depth_by_bin,icd_code_counts_annotated,  icd_counts_annotated_with_depth, snomed_depth, ICD9_depth, file = 'Rdata/initial_count_data_exploration_plotdata.Rdata' )
+
+cb <- ggplot(counts_by_bin) + 
+  geom_col(aes(x=count_bin, y=n)) + theme_minimal()
+
+
+db <- ggplot(depth_by_bin %>% mutate(count_bin = factor(count_bin, levels = c("0","1","[2,5)","[5, 25)",">=25")) ) )+
+  geom_boxplot(aes(x = count_bin, y= avg_depth)) + 
+  theme_minimal()
+#cb/db
+
+```
+
+$ \sum_i^n e^{-W_i} * L_i + W_i $
 
 
 

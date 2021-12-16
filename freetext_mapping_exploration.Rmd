@@ -3,6 +3,28 @@ title: "R Notebook"
 output: html_notebook
 ---
 
+Dont run this chunk - run `mimcR/run.sh` at the commandline instead
+```{r, eval=F}
+setwd("/Users/vinayswamy/columbia/coursework/BINFG4003-symbolic-methods/project/mimicR/")
+library(tidyverse)
+rextendr::document() # compile rust code
+devtools::load_all(".")
+
+
+k <- read_delim("https://lhncbc.nlm.nih.gov/ii/tools/MetaMap/Docs/SemanticTypes_2018AB.txt", delim = "|", col_names = c("type", "asd", "s")) %>% pull(type)
+raw_freetext_mappings = get_freetext_diagnosis_as_snomed_ids_filter_and_write( 
+	"/Users/vinayswamy/columbia/coursework/BINFG4003-symbolic-methods/project/mimicR/noteevents_chunk2.csv",  
+c("Discharge Diagnosis", "DISCHARGE DIAGNOSIS", "FINAL DIAGNOSES", "Final Diagnoses"),
+  "/Users/vinayswamy/columbia/coursework/BINFG4003-symbolic-methods/project/CUI_to_ICD9.RRF",
+  k,
+  "freetext_mapping_to_CUI_only_rerun_on_chunk.txt",
+  FALSE
+)
+
+```
+
+
+
 
 Freetext note mapping results 
 
@@ -29,13 +51,13 @@ raw_mapping_has_result <- raw_mapping_results %>%  filter(!is.na(freetext_noteli
 ```{r}
 N_noteline_extracted <- filter(raw_mapping_results,!is.na(freetext_noteline)) %>% nrow 
 N_cases_with_noteline <- filter(raw_mapping_results,!is.na(freetext_noteline)) %>% select(SUBJECT_ID, HADM_ID) %>% distinct %>% nrow
-N_noteline_with_CUI
+
 N_CUI_extracted <- raw_mapping_has_result %>% pull(CUI_strl) %>% str_split(',') %>% unlist %>% length()
 ```
 
 Get CUI to SNOMED and CUI to ICD9 mapping
 
-```{bash}
+```{bash, eval = F}
 echo "SNOMEDCT_US" > q.txt
 echo "ICD9CM" >> q.txt
 echo "ICD10CM" >> q.txt
@@ -159,12 +181,13 @@ ft_notes_mapped_novel_code <- ft_notes_mapped_to_ICD9_clean %>%
 
 ft_notes_mapped_novel_code %>% select(SUBJECT_ID, HADM_ID) %>% distinct %>% nrow
 
-
+N_icd_mapped_from_ft = ft_notes_mapped_to_ICD9_clean %>% nrow()
+N_cases_icd_mapped_from_ft = ft_notes_mapped_to_ICD9_clean %>% select(SUBJECT_ID, HADM_ID) %>% distinct %>% nrow()
 ```
 
 
 ```{r}
-ft_notes_mapped_to_ICD9_clean %>% left_join(diag_with_admits %>% select(SUBJECT_ID, HADM_ID, ICD9_CODE) %>% mutate(code_type = 'Matches Billed Code')) %>%
+ft_mapping_piechart_data <-  ft_notes_mapped_to_ICD9_clean %>% left_join(diag_with_admits %>% select(SUBJECT_ID, HADM_ID, ICD9_CODE) %>% mutate(code_type = 'Matches Billed Code')) %>%
   mutate(code_type = replace_na(code_type, "Novel Code") ) %>% 
   mutate(code_type = case_when(
              code_type == "Novel Code" & ICD9_CODE %in% nec_noc_other_terms ~ "NEC/NOC code", 
@@ -176,17 +199,30 @@ ft_notes_mapped_to_ICD9_clean %>% left_join(diag_with_admits %>% select(SUBJECT_
          y=1
          ) %>% 
   group_by(code_type) %>% 
-  count %>% 
-  ggplot(aes(x="",y=n, fill = code_type)) + 
+  count 
+
+  ggplot(ft_mapping_piechart_data, aes(x="",y=n, fill = code_type)) + 
   geom_bar(stat = "identity") + 
   coord_polar("y", start=0) + 
-  ggtitle(paste0("n = ", nrow(ft_notes_mapped_to_ICD9_clean), " ICD9 Codes" )) +
+  ggtitle(paste0("n = ", N_icd_mapped_from_ft, " ICD9 Codes" )) +
   guides(fill = guide_legend(title = ""))+
   theme_void()
 ```
 
 
 
+```{r}
+tot = sum(ft_mapping_piechart_data$n)
+N_pt_ft_match_bld <-  ft_mapping_piechart_data[1, 2] %>% as.numeric %>% {.*100 / tot} %>% round(2)
+N_pt_ft_noc <- ft_mapping_piechart_data[2, 2] %>% as.numeric %>% {.*100 / tot} %>% round(2)
+N_pt_novel_unused = ft_mapping_piechart_data[3, 2] %>% as.numeric %>% {.*100 / sum(ft_mapping_piechart_data[3:4, 2]) } %>% round(2)
+
+```
+
+
+```{r}
+ft_mapping_piechart_data
+```
 
 ```{r}
 diag_ICD9_with_ft_ICD9 <-  diag_with_admits  %>% 
@@ -201,7 +237,7 @@ Code cost analysis
 
 ```{r}
 load('Rdata/ICD9_estimated_dollar_amounts.Rdata')
-save.image("workspace_prefinancial_analysis.Rdata")
+#save.image("workspace_prefinancial_analysis.Rdata")
 ```
 
 
@@ -210,18 +246,22 @@ Via Medicare data
 ```{r}
 diag_ICD9_with_ft_ICD9_with_cost <- diag_ICD9_with_ft_ICD9 %>% inner_join(estim_dollar_per_ICD9_medicare)
 
-pv = tibble(x= 1, y=18000, label= wilcox.test(diag_ICD9_with_ft_ICD9_with_cost %>% filter(CODE_ORIGIN == "freetext_note") %>% pull(avg_estim_dollar_sub), 
-            diag_ICD9_with_ft_ICD9_with_cost %>% filter(CODE_ORIGIN != "freetext_note") %>% pull(avg_estim_dollar_sub)
-            )[['p.value']] %>% signif(3) %>% {paste0("Wilcox p value = ",.)})
+ft_code_costs = diag_ICD9_with_ft_ICD9_with_cost %>% filter(CODE_ORIGIN == "freetext_note") %>% pull(avg_estim_dollar_sub)
+bld_code_costs <- diag_ICD9_with_ft_ICD9_with_cost %>% filter(CODE_ORIGIN != "freetext_note") %>% pull(avg_estim_dollar_sub)
+N_ft_bld_cost_diff <-  {mean(ft_code_costs) - mean(bld_code_costs)} %>% round(2)
 
+pv =  wilcox.test( ft_code_costs, bld_code_costs)[['p.value']] %>% signif(3) 
 
-ggplot(diag_ICD9_with_ft_ICD9_with_cost %>% 
+pv_lab = tibble(x= 1, y=18000, pv=pv, label= pv %>% {paste0("Wilcox p value = ",.)})
+
+ft_bp_pdata <- diag_ICD9_with_ft_ICD9_with_cost %>% 
          mutate(CODE_ORIGIN = case_when(
            CODE_ORIGIN == "freetext_note" ~ "freetext ICD9",
-           CODE_ORIGIN == "MIMIC-diag" ~ "billed ICD9"
-         ))) + 
+           CODE_ORIGIN == "MIMIC-diag" ~ "billed ICD9"))
+
+ggplot(ft_bp_pdata %>% mutate(r)) + 
   geom_boxplot(aes(x=CODE_ORIGIN, y =avg_estim_dollar_sub), outlier.shape = NA) +
-  geom_label(data = pv ,aes(x=x, y=y, label= label))+
+  geom_label(data = pv_lab ,aes(x=x, y=y, label= label))+
   ylim(c(0, 20000)) + 
   xlab("")+
   ylab("Average Submitted Cost")+
@@ -229,8 +269,17 @@ ggplot(diag_ICD9_with_ft_ICD9_with_cost %>%
   theme_minimal()
 
 
-
 ```
+
+
+```{r}
+save(ft_mapping_piechart_data,ft_bp_pdata,pv_lab,   file = 'Rdata/freetext_mapping_plotdata.Rdata')
+save(list=ls()[grepl("N_", ls() )],  file = 'Rdata/freetext_mapping_countdata.Rdata')
+```
+
+
+----
+
 ```{r}
 ft_code_counts <- ft_notes_mapped_novel_code %>% group_by(ICD9_CODE) %>% summarise(count_ft = n()) %>% mutate(prop_ft = count_ft/sum(count_ft))
 

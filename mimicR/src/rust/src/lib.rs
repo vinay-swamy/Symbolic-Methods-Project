@@ -369,6 +369,20 @@ fn call_metamap(text:&str, uid:String,  keep_types:&HashSet<String>, cui2snomed:
                      .output()
                      .expect("Failed to execute command");
     
+    /*
+    For reference the script run_metamap.sh looks like this 
+    #!/bin/bash
+    set -e 
+    infile=$1
+    cdir=$PWD
+    metamapexec_dir="/Users/vinayswamy/columbia/coursework/BINFG4003-symbolic-methods/project/MetaMap_exec/"
+    metamapindex_dir="/Users/vinayswamy/columbia/coursework/BINFG4003-symbolic-methods/project/MetaMap_data/data/ivf/2020AA/USAbase/"
+    cp $infile $metamapexec_dir
+    cd $metamapexec_dir
+    bash metamaplite.sh --overwrite --indexdir=$metamapindex_dir $infile
+    cp ${infile/txt/mmi} $cdir
+    
+    */
     let res_str = fs::read_to_string(".mm.mmi").expect("failed to read") ;
     
     let op = Command::new("rm")
